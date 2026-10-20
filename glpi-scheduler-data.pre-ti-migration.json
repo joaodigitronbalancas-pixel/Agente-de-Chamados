@@ -1,0 +1,131 @@
+{
+  "users": [
+    {
+      "id": "usr-admin-1",
+      "name": "João Leopoldino",
+      "email": "joao.leopoldino@digitronbalancas.com.br",
+      "passwordHash": "123456",
+      "role": "admin",
+      "company": "Digitron Balanças",
+      "createdAt": "2026-01-15T08:00:00.000Z"
+    }
+  ],
+  "glpiConfig": {
+    "url": "https://suporte.digitronbalancas.com.br/apirest.php",
+    "authType": "user_token",
+    "appToken": "digitron_glpi_app_token_9x7a2b",
+    "userToken": "usr_token_joao_digitron_k8m2p9",
+    "username": "joao.leopoldino",
+    "password": "",
+    "entityId": 0,
+    "connectionStatus": "error",
+    "lastCheck": "2026-10-20T13:41:23.877Z",
+    "glpiVersion": "GLPI 10.0.12 REST API",
+    "glpiUser": "João Leopoldino (Perfil: Super-Admin)",
+    "lastErrorMessage": "Servidor não alcançável (ENOTFOUND). O host \"suporte.digitronbalancas.com.br\" não foi resolvido. Verifique se o endereço é interno da intranet da Digitron, se requer VPN ou configure o IP de rede."
+  },
+  "routines": [
+    {
+      "id": "rot-101",
+      "title": "[Rotina Semanal] Calibração e Teste de Balanças Digitron ({data})",
+      "content": "## ⚖️ Procedimento Padrão de Calibração Preventiva\n**Data Programada:** {data} às {hora}\n**Unidade:** Digitron Balanças - Pátio Industrial\n**Responsável Técnico:** João Leopoldino / Equipe de Metrologia\n\n### 📋 Checklist Obrigatório:\n- [ ] Limpeza do prato de pesagem e células de carga.\n- [ ] Verificação de nivelamento e estanqueidade.\n- [ ] Teste de carga com pesos padrão rastreados RBC (25%, 50%, 75%, 100%).\n- [ ] Ensaio de excentricidade (cantos da plataforma).\n- [ ] Emissão do certificado e etiquetagem do instrumento.",
+      "frequency": "weekly",
+      "time": "08:00",
+      "daysOfWeek": [
+        1
+      ],
+      "dayOfMonth": 1,
+      "customIntervalHours": 24,
+      "isActive": true,
+      "type": 2,
+      "urgency": 4,
+      "impact": 4,
+      "priority": 4,
+      "categoryId": 14,
+      "categoryName": "Metrologia e Calibração",
+      "requester": "joao.leopoldino@digitronbalancas.com.br",
+      "assignee": "Equipe de Metrologia",
+      "entityId": 0,
+      "tags": [
+        "Metrologia",
+        "Digitron",
+        "Qualidade",
+        "Semanal"
+      ],
+      "lastRunAt": "2026-10-20T13:32:04.457Z",
+      "nextRunAt": "2026-10-26T08:00:00.000Z",
+      "totalDispatched": 0,
+      "createdAt": "2026-01-20T10:00:00.000Z",
+      "updatedAt": "2026-03-01T14:30:00.000Z",
+      "lastExecutionStatus": "failed"
+    },
+    {
+      "id": "rot-102",
+      "title": "[TI Diário] Verificação de Backups e Saúde do ERP Digitron ({data})",
+      "content": "## 💾 Rotina Diária de Backup & Banco de Dados\n**Horário de Validação:** {hora} - {dia_semana}\n**Setor:** TI e Infraestrutura Digitron Balanças\n\n### 📋 Checklist de Validação:\n- [ ] Conferir dump do banco de dados PostgreSQL e ERP Protheus.\n- [ ] Checar replicação de storage NAS e nuvem.\n- [ ] Testar integridade e checksum dos arquivos gerados na madrugada.\n- [ ] Monitorar temperatura e SMART dos discos do servidor de dados.",
+      "frequency": "daily",
+      "time": "06:30",
+      "daysOfWeek": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "dayOfMonth": 1,
+      "customIntervalHours": 24,
+      "isActive": true,
+      "type": 2,
+      "urgency": 3,
+      "impact": 4,
+      "priority": 4,
+      "categoryId": 8,
+      "categoryName": "TI - Servidores e Infraestrutura",
+      "requester": "joao.leopoldino@digitronbalancas.com.br",
+      "assignee": "Suporte N2 TI",
+      "entityId": 0,
+      "tags": [
+        "Backup",
+        "TI",
+        "Servidores",
+        "Diário"
+      ],
+      "lastRunAt": "2026-10-19T15:31:41.722Z",
+      "nextRunAt": "2026-10-20T13:41:41.722Z",
+      "totalDispatched": 0,
+      "createdAt": "2026-01-10T08:00:00.000Z",
+      "updatedAt": "2026-03-15T09:15:00.000Z"
+    },
+    {
+      "id": "rot-103",
+      "title": "[Mensal] Manutenção Preventiva da Balança Rodoviária 120t ({mes_ano})",
+      "content": "## 🚛 Inspeção e Drenagem - Balança Rodoviária\n**Período:** {mes_extenso} de {ano}\n\n### 📋 Ações Obrigatórias:\n- [ ] Vistoria do fosso e bombas automáticas de drenagem.\n- [ ] Limpeza de detritos sob os tirantes e batentes longitudinais.\n- [ ] Medição de mV/V das 8 células de carga digitais.\n- [ ] Inspeção da caixa de junção e aterramento contra raios.",
+      "frequency": "monthly",
+      "time": "09:00",
+      "daysOfWeek": [],
+      "dayOfMonth": 1,
+      "customIntervalHours": 720,
+      "isActive": true,
+      "type": 1,
+      "urgency": 4,
+      "impact": 4,
+      "priority": 4,
+      "categoryId": 22,
+      "categoryName": "Manutenção de Campo - Pesados",
+      "requester": "joao.leopoldino@digitronbalancas.com.br",
+      "assignee": "Técnico Especialista Rodoviário",
+      "entityId": 0,
+      "tags": [
+        "Rodoviária",
+        "Células de Carga",
+        "Mensal"
+      ],
+      "lastRunAt": "2026-09-22T13:31:41.722Z",
+      "nextRunAt": "2026-10-25T13:31:41.722Z",
+      "totalDispatched": 0,
+      "createdAt": "2026-02-01T11:00:00.000Z",
+      "updatedAt": "2026-03-10T16:00:00.000Z"
+    }
+  ],
+  "logs": []
+}

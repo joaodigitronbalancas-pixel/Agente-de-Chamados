@@ -1,0 +1,6 @@
+{
+  "name": "Digi-Tron TI - GLPI AutoScheduler",
+  "description": "Sistema de automação e agendamento de chamados preventivos e operacionais de Tecnologia da Informação (TI) no GLPI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

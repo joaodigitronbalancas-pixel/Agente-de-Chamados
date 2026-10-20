@@ -1,0 +1,50 @@
+# Node dependencies and build
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+
+# Environment files
+.env*
+!.env.example
+backend/.env*
+!backend/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+
+# Local databases and runtime stores
+backend/glpi_data.json
+glpi-scheduler-data.json
+*.backup.json
+
+# VS Code (preserve launch and tasks)
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
