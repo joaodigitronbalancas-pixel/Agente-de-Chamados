@@ -27,10 +27,10 @@ class Settings:
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
     
-    # CORS Origins
+    # CORS Origins (permite o Agente de Chamados na porta 5522 e origens locais)
     _raw_cors = os.getenv(
         "CORS_ORIGINS", 
-        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"
+        "http://localhost:5522,http://127.0.0.1:5522,http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"
     )
     CORS_ORIGINS: List[str] = [origin.strip() for origin in _raw_cors.split(",") if origin.strip()]
 

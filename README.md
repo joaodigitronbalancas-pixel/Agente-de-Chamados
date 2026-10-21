@@ -13,6 +13,7 @@ O sistema adota arquitetura desacoplada e segura para execução local no comput
 │     GLPI (Docker Desktop)       │
 │  - Web:   http://localhost:8080/front/central.php
 │  - API:   http://localhost:8080/apirest.php
+│  - Preservado: Porta 8080       │
 └────────────────┬────────────────┘
                  ▲ (Chamadas REST com App-Token e User-Token)
                  │
@@ -26,15 +27,17 @@ O sistema adota arquitetura desacoplada e segura para execução local no comput
                  ▲ (CORS / JSON API: VITE_API_URL=http://localhost:8000)
                  │
 ┌────────────────┴────────────────┐
-│      Frontend React (Vite)      │
-│  - Porta: http://localhost:3000 │
-│  - Interface Digi-Tron TI       │
-│  - Painel, Rotinas e Auditoria  │
+│ Agente de Chamados (React/Node) │
+│  - Porta: http://localhost:5522 │
+│  - Acesso: /login               │
+│  - Sem conflito com Grafana     │
 └─────────────────────────────────┘
+                 ▲
+                 │ (Grafana mantido em sua porta original, ex: 3000)
 ```
 
-> **Por que o backend local é necessário?**  
-> Quando a aplicação executa em um container na nuvem, o endereço `localhost` referencia o próprio container e não alcança a porta 8080 do Windows. Ao executar o backend localmente no computador Windows que hospeda o Docker Desktop, a conexão com `http://localhost:8080/apirest.php` opera de forma nativa e direta.
+> **Por que a porta 5522?**  
+> O Agente de Chamados opera exclusivamente na porta **5522** para evitar qualquer conflito com o **Grafana** (que roda na porta 3000) e com o **GLPI** (que roda na porta 8080).
 
 ---
 
@@ -55,8 +58,8 @@ Dê um duplo clique no arquivo **`start-windows.bat`** na raiz do projeto.
 Esse script irá:
 1. Criar o ambiente virtual Python (`venv`) e instalar dependências em `backend/requirements.txt`.
 2. Iniciar o **Backend FastAPI** na porta `8000`.
-3. Iniciar o **Frontend React** na porta `3000`.
-4. Abrir o sistema em seu navegador: **`http://localhost:3000`**.
+3. Iniciar o **Agente de Chamados** na porta `5522`.
+4. Disponibilizar o acesso em: **`http://localhost:5522/login`**.
 
 ---
 
@@ -86,7 +89,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 * Swagger Docs disponível em: **`http://localhost:8000/docs`**
 
-#### Passo 2 — Configurar o Frontend React (Vite)
+#### Passo 2 — Configurar o Frontend e Servidor (Agente de Chamados)
 Abra outro terminal na raiz do projeto:
 
 ```cmd
@@ -96,20 +99,64 @@ copy .env.example .env
 
 Certifique-se de que o `.env` contenha:
 ```env
+PORT="5522"
+APP_URL="http://localhost:5522"
 VITE_API_URL="http://localhost:8000"
 ```
 
-Inicie o frontend:
+Inicie a aplicação:
 ```cmd
 npm run dev
 ```
 
-Acesse o sistema em: **`http://localhost:3000`**
+Acesse o sistema no navegador em: **`http://localhost:5522/login`**
 
 ---
 
-## 🔑 4. Acesso ao Sistema e Credenciais Padrão
+## 🔍 4. Resolução do Erro EADDRINUSE na Porta 5522
 
+Se ao executar `npm run dev` ocorrer:
+```text
+Error: listen EADDRINUSE: address already in use 0.0.0.0:5522
+```
+
+### O que causa esse erro no Windows?
+No Windows, quando um terminal do VS Code ou CMD é fechado sem aguardar o encerramento completo do processo, ou se você executou `npm run dev` em duas janelas simultâneas, uma instância anterior de `node.exe` (ou `tsx`) continua viva em segundo plano escutando na porta 5522.
+
+### Como resolver com total segurança (SEM alterar Docker, GLPI ou Grafana):
+
+**Método Rápido:**
+Dê um duplo clique no arquivo **`verificar-portas.bat`** na raiz do projeto. Ele listará os processos e os PIDs associados a cada porta.
+
+**Método Manual via Prompt de Comando (CMD) ou PowerShell:**
+1. Verifique qual processo está escutando na porta 5522:
+   ```cmd
+   netstat -ano | findstr :5522
+   ```
+   *A saída terá o formato: `TCP 0.0.0.0:5522 0.0.0.0:0 LISTENING 14220` (onde `14220` é o PID).*
+
+2. Verifique qual é o programa correspondente a esse PID:
+   ```cmd
+   tasklist /fi "pid eq 14220"
+   ```
+   *(Confirmará que se trata do processo `node.exe`).*
+
+3. Finalize com segurança apenas esse processo específico do Node:
+   ```cmd
+   taskkill /PID 14220 /F
+   ```
+   *⚠️ Não finalize containers Docker, GLPI (8080) ou Grafana (3000).*
+
+4. Inicie o servidor novamente:
+   ```cmd
+   npm run dev
+   ```
+
+---
+
+## 🔑 5. Acesso ao Sistema e Credenciais Padrão
+
+* **URL:** `http://localhost:5522/login`
 * **E-mail do Administrador:** `joao.leopoldino@digitronbalancas.com.br`
 * **Senha:** `123456`
 * Na tela de login há um botão de preenchimento rápido em 1 clique e fluxo de recuperação de senha com código seguro.

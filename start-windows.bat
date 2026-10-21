@@ -4,10 +4,10 @@ echo ================================================================
 echo   Digi-Tron Balancas - GLPI Autoscheduler (Ambiente Local)
 echo ================================================================
 echo.
-echo Este script inicia o backend FastAPI (porta 8000) e o frontend (porta 3000).
-echo Certifique-se de que o GLPI esta rodando no Docker Desktop em:
-echo   http://localhost:8080/front/central.php (Web)
-echo   http://localhost:8080/apirest.php (API REST)
+echo Este script inicia o backend FastAPI (porta 8000) e o Agente de Chamados (porta 5522).
+echo Servicos preservados:
+echo   - GLPI Docker:    http://localhost:8080/front/central.php (Web) / apirest.php (API)
+echo   - Grafana:        Preservado na sua porta original (3000) sem alteracao
 echo.
 
 if not exist ".env" (
@@ -22,9 +22,11 @@ start "Digi-Tron TI - Backend FastAPI (Porta 8000)" cmd /k "call backend\run.bat
 
 timeout /t 3 /nobreak >nul
 
-echo [2/2] Iniciando Frontend React/Vite...
+echo [2/2] Iniciando Agente de Chamados na porta 5522...
 echo.
-echo Acesse o sistema no seu navegador em: http://localhost:3000
+echo ================================================================
+echo Acesse o Agente de Chamados em: http://localhost:5522/login
+echo ================================================================
 echo.
 npm run dev
 

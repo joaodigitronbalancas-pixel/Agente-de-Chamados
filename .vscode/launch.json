@@ -19,7 +19,7 @@
       "envFile": "${workspaceFolder}/backend/.env"
     },
     {
-      "name": "Frontend: Vite Dev (Port 3000)",
+      "name": "Frontend: Agente de Chamados (Port 5522)",
       "type": "node",
       "request": "launch",
       "cwd": "${workspaceFolder}",
@@ -29,8 +29,8 @@
   ],
   "compounds": [
     {
-      "name": "Fullstack: Backend FastAPI + Frontend Vite",
-      "configurations": ["Backend: FastAPI (Port 8000)", "Frontend: Vite Dev (Port 3000)"]
+      "name": "Fullstack: Backend FastAPI + Agente de Chamados (5522)",
+      "configurations": ["Backend: FastAPI (Port 8000)", "Frontend: Agente de Chamados (Port 5522)"]
     }
   ]
 }

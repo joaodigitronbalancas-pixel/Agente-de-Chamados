@@ -5,6 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import dns from 'dns/promises';
 import { fileURLToPath } from 'url';
+import dotenv from 'dotenv';
 import { 
   getSaoPauloParts, 
   getSaoPauloTodayIso, 
@@ -13,13 +14,56 @@ import {
   parseDateSafe 
 } from './src/utils/dateTime';
 
+dotenv.config();
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const port = parseInt(process.env.PORT || '3000', 10);
+
+function resolvePort(): number {
+  // 1. Argumentos explícitos de linha de comando (--port 5522 ou -p 5522)
+  for (let i = 0; i < process.argv.length; i++) {
+    const arg = process.argv[i];
+    if ((arg === '--port' || arg === '-p') && process.argv[i + 1]) {
+      const parsed = parseInt(process.argv[i + 1], 10);
+      if (!isNaN(parsed) && parsed > 0) return parsed;
+    }
+  }
+
+  // 2. Variável de ambiente PORT (.env ou container)
+  if (process.env.PORT) {
+    const parsed = parseInt(process.env.PORT, 10);
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  }
+
+  // 3. Porta padrão oficial do Agente de Chamados: 5522
+  return 5522;
+}
+
+const port = resolvePort();
+
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (_req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 app.use(express.json({ limit: '10mb' }));
+
+app.get('/api/health', (_req: Request, res: Response) => {
+  return res.json({
+    status: 'ok',
+    service: 'Digi-Tron TI — Agente de Chamados',
+    port: port,
+    accessUrl: `http://localhost:${port}/login`,
+    timestamp: new Date().toISOString()
+  });
+});
 
 const DATA_FILE = path.resolve(__dirname, 'glpi-scheduler-data.json');
 
@@ -1756,8 +1800,39 @@ async function startServer() {
     });
   }
 
-  app.listen(port, '0.0.0.0', () => {
-    console.log(`[Digi-Tron TI GLPI AutoScheduler] Server listening on http://0.0.0.0:${port}`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`\n===============================================================`);
+    console.log(`  Digi-Tron TI — Agente de Chamados`);
+    console.log(`  Painel de Acesso:  http://localhost:${port}/login`);
+    console.log(`  Health Check:      http://localhost:${port}/api/health`);
+    console.log(`  GLPI Integrado:    ${db.glpiConfig.url}`);
+    console.log(`  Ambiente:          ${process.env.NODE_ENV || 'development'}`);
+    console.log(`===============================================================\n`);
+  });
+
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n❌ [CONFLITO DE PORTA] A porta ${port} já está em uso (EADDRINUSE: address already in use 0.0.0.0:${port}).`);
+      console.error(`\n🔍 CAUSA COMUM NO WINDOWS:`);
+      console.error(`   Uma instância anterior do Agente de Chamados (node.exe / tsx) ainda está ativa em segundo plano,`);
+      console.error(`   ou outro processo local está utilizando a porta ${port}.`);
+      console.error(`   (Observação: GLPI usa a porta 8080 e Grafana usa a porta 3000; ambos devem ser preservados).`);
+      console.error(`\n🛠️ COMO VERIFICAR E LIBERAR NO WINDOWS (SEM TOCAR NO DOCKER, GLPI OU GRAFANA):`);
+      console.error(`   1. Abra o Prompt de Comando (CMD) ou PowerShell e execute:`);
+      console.error(`        netstat -ano | findstr :${port}`);
+      console.error(`   2. Identifique o PID (número na última coluna da saída).`);
+      console.error(`   3. Verifique o processo associado:`);
+      console.error(`        tasklist /fi "pid eq <PID>"`);
+      console.error(`   4. Se for o processo Node/tsx antigo do próprio projeto, encerre-o com segurança:`);
+      console.error(`        taskkill /PID <PID> /F`);
+      console.error(`   5. Você também pode rodar o script utilitário de diagnóstico:`);
+      console.error(`        verificar-portas.bat`);
+      console.error(`   6. Reinicie o servidor com: npm run dev\n`);
+      process.exit(1);
+    } else {
+      console.error('❌ Erro inesperado no servidor HTTP:', err);
+      process.exit(1);
+    }
   });
 }
 
