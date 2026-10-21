@@ -181,3 +181,116 @@ export interface ConnectionTestResponse {
     ticketsCreated: number;
   };
 }
+
+// GLPI Reference Data & Entities
+export interface GlpiUser {
+  id: number;
+  name: string; // login / username
+  realname?: string;
+  firstname?: string;
+  email?: string;
+  active?: number;
+  entityId?: number;
+  isTechnician?: boolean;
+}
+
+export interface GlpiCategory {
+  id: number;
+  name: string;
+  completeName: string;
+  parentId?: number;
+  entityId?: number;
+  isIt: boolean;
+}
+
+export interface GlpiGroup {
+  id: number;
+  name: string;
+  completeName: string;
+  entityId?: number;
+  canAssign?: boolean;
+}
+
+export interface GlpiTechnician {
+  id: number;
+  name: string;
+  realname?: string;
+  firstname?: string;
+  email?: string;
+  groupId?: number;
+}
+
+export interface GlpiEntity {
+  id: number;
+  name: string;
+  completeName: string;
+}
+
+export interface GlpiFieldOption {
+  id: number;
+  label: string;
+  color?: string;
+}
+
+export interface GlpiReferenceData {
+  isLive: boolean;
+  lastSyncedAt: string;
+  users: GlpiUser[];
+  categories: GlpiCategory[];
+  groups: GlpiGroup[];
+  technicians: GlpiTechnician[];
+  entities: GlpiEntity[];
+  statusOptions: GlpiFieldOption[];
+  priorityOptions: GlpiFieldOption[];
+  urgencyOptions: GlpiFieldOption[];
+  impactOptions: GlpiFieldOption[];
+  typeOptions: GlpiFieldOption[];
+}
+
+export interface GlpiTicketFull {
+  id: number;
+  name: string;
+  content?: string;
+  status: number;
+  statusName: string;
+  urgency: number;
+  priority: number;
+  impact: number;
+  type: number;
+  typeName: string;
+  categoryId?: number;
+  categoryName?: string;
+  entityId?: number;
+  entityName?: string;
+  requesterId?: number;
+  requesterName?: string;
+  requesterEmail?: string;
+  technicianId?: number;
+  technicianName?: string;
+  groupId?: number;
+  groupName?: string;
+  dateCreation: string;
+  dateMod: string;
+  solvedDate?: string;
+  closedDate?: string;
+}
+
+export interface CreateGlpiTicketPayload {
+  title: string;
+  description: string;
+  categoryId: number;
+  categoryName?: string;
+  requesterId?: number;
+  requesterName?: string;
+  groupId?: number;
+  groupName?: string;
+  technicianId?: number;
+  technicianName?: string;
+  entityId?: number;
+  type: 1 | 2; // 1 = Incidente, 2 = Requisição
+  urgency: 1 | 2 | 3 | 4 | 5;
+  impact: 1 | 2 | 3 | 4 | 5;
+  priority: 1 | 2 | 3 | 4 | 5;
+  equipment?: string;
+}
+

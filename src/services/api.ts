@@ -1,8 +1,57 @@
-import { DashboardStats, ExecutionLog, GlpiConfig, RoutineSchedule, User, GlpiRealTicket, RuntimeEnvironment, ConnectionTestResponse } from '../types';
+import { 
+  DashboardStats, 
+  ExecutionLog, 
+  GlpiConfig, 
+  RoutineSchedule, 
+  User, 
+  GlpiRealTicket, 
+  RuntimeEnvironment, 
+  ConnectionTestResponse,
+  GlpiReferenceData,
+  GlpiTicketFull,
+  CreateGlpiTicketPayload
+} from '../types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
 export const api = {
+  // GLPI Reference Data (Users, Categories, Groups, Technicians, Entities)
+  async getReferenceData(): Promise<GlpiReferenceData> {
+    const res = await fetch(`${API_BASE_URL}/api/glpi/reference-data`);
+    if (!res.ok) throw new Error('Erro ao carregar dados de referência do GLPI');
+    return res.json();
+  },
+
+  async refreshReferenceData(): Promise<GlpiReferenceData> {
+    const res = await fetch(`${API_BASE_URL}/api/glpi/reference-data/refresh`, { method: 'POST' });
+    if (!res.ok) throw new Error('Erro ao atualizar dados de referência do GLPI');
+    return res.json();
+  },
+
+  // GLPI Real Tickets
+  async getGlpiTickets(params?: { search?: string; status?: number; limit?: number }): Promise<GlpiTicketFull[]> {
+    const query = new URLSearchParams();
+    if (params?.search) query.set('search', params.search);
+    if (params?.status) query.set('status', String(params.status));
+    if (params?.limit) query.set('limit', String(params.limit));
+
+    const url = `${API_BASE_URL}/api/glpi/tickets${query.toString() ? '?' + query.toString() : ''}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Erro ao consultar chamados no GLPI');
+    return res.json();
+  },
+
+  async createGlpiTicket(payload: CreateGlpiTicketPayload): Promise<{ success: boolean; ticketId: number; ticketUrl: string; message: string }> {
+    const res = await fetch(`${API_BASE_URL}/api/glpi/tickets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || 'Erro ao criar chamado no GLPI');
+    return data;
+  },
+
   // Authentication
   async login(email: string, password: string): Promise<{ token: string; user: User }> {
     const res = await fetch(`${API_BASE_URL}/api/auth/login`, {

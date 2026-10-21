@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { DashboardStats, ExecutionLog, GlpiConfig, RoutineSchedule } from '../types';
+
 import { formatRelativeCountdown, getFrequencyLabel } from '../utils/scheduler';
+import { formatDateTime, formatTimeOnly } from '../utils/dateTime';
+
 import { 
   CalendarClock, 
   CheckCircle2, 
@@ -210,8 +213,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </span>
           </div>
           <div className="mt-3 text-[11px] text-slate-400 truncate">
-            {stats?.nextRunAt ? new Date(stats.nextRunAt).toLocaleString('pt-BR') : 'Sem rotinas ativas'}
+            {stats?.nextRunAt ? formatDateTime(stats.nextRunAt) : 'Sem rotinas ativas'}
           </div>
+
         </div>
 
       </div>
@@ -398,8 +402,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </h4>
                       </div>
                       <div className="mt-1 flex items-center gap-3 text-[11px] text-slate-400">
-                        <span>{new Date(log.triggeredAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}</span>
+                        <span>{formatTimeOnly(log.triggeredAt)}</span>
                         <span>•</span>
+
                         <span className={log.status === 'failed' ? 'text-rose-400 font-medium' : 'text-emerald-400 font-medium'}>
                           {log.status === 'success' ? 'Criado no GLPI' : 'Erro no Envio'}
                         </span>

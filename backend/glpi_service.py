@@ -405,3 +405,171 @@ async def glpi_get_real_tickets(base_url: str, app_token: str, user_token: str, 
             return []
     finally:
         await glpi_kill_session(url, session_token, app_token)
+
+DEFAULT_IT_REFERENCE_DATA = {
+    "isLive": False,
+    "lastSyncedAt": "2026-10-21T08:30:00-03:00",
+    "users": [
+        {"id": 2, "name": "joao.leopoldino", "realname": "Leopoldino", "firstname": "João", "email": "joao.leopoldino@digitronbalancas.com.br", "active": 1, "entityId": 0, "isTechnician": True},
+        {"id": 3, "name": "ti.suporte", "realname": "Suporte", "firstname": "TI Digi-Tron", "email": "suporte.ti@digitronbalancas.com.br", "active": 1, "entityId": 0, "isTechnician": True},
+        {"id": 4, "name": "admin.infra", "realname": "Infraestrutura", "firstname": "Admin TI", "email": "infra@digitronbalancas.com.br", "active": 1, "entityId": 0, "isTechnician": True}
+    ],
+    "categories": [
+        {"id": 1, "name": "TI - Infraestrutura e Servidores", "completeName": "TI > Infraestrutura e Servidores", "entityId": 0, "isIt": True},
+        {"id": 2, "name": "TI - Backups e Armazenamento", "completeName": "TI > Backups e Armazenamento", "entityId": 0, "isIt": True},
+        {"id": 3, "name": "TI - Redes e Conectividade", "completeName": "TI > Redes e Conectividade", "entityId": 0, "isIt": True},
+        {"id": 4, "name": "TI - Sistemas e ERP Factory OS", "completeName": "TI > Sistemas e ERP Factory OS", "entityId": 0, "isIt": True},
+        {"id": 5, "name": "TI - Suporte a Usuários e Estações", "completeName": "TI > Suporte a Usuários e Estações", "entityId": 0, "isIt": True},
+        {"id": 6, "name": "TI - Segurança da Informação", "completeName": "TI > Segurança da Informação", "entityId": 0, "isIt": True},
+        {"id": 7, "name": "TI - Bancos de Dados", "completeName": "TI > Bancos de Dados", "entityId": 0, "isIt": True},
+        {"id": 8, "name": "TI - Periféricos e Impressão", "completeName": "TI > Periféricos e Impressão", "entityId": 0, "isIt": True}
+    ],
+    "groups": [
+        {"id": 1, "name": "Equipe de TI", "completeName": "TI > Equipe de TI", "entityId": 0, "canAssign": True},
+        {"id": 2, "name": "Infraestrutura e Redes", "completeName": "TI > Infraestrutura e Redes", "entityId": 0, "canAssign": True},
+        {"id": 3, "name": "Sistemas e ERP", "completeName": "TI > Sistemas e ERP", "entityId": 0, "canAssign": True}
+    ],
+    "technicians": [
+        {"id": 2, "name": "joao.leopoldino", "realname": "Leopoldino", "firstname": "João", "email": "joao.leopoldino@digitronbalancas.com.br", "groupId": 1},
+        {"id": 3, "name": "ti.suporte", "realname": "Suporte", "firstname": "TI Digi-Tron", "email": "suporte.ti@digitronbalancas.com.br", "groupId": 1}
+    ],
+    "entities": [
+        {"id": 0, "name": "Digi-Tron Matriz", "completeName": "Entidade Raiz > Digi-Tron Matriz"}
+    ],
+    "statusOptions": [
+        {"id": 1, "label": "Novo", "color": "blue"},
+        {"id": 2, "label": "Em atendimento (atribuído)", "color": "amber"},
+        {"id": 3, "label": "Em atendimento (planejado)", "color": "purple"},
+        {"id": 4, "label": "Pendente", "color": "orange"},
+        {"id": 5, "label": "Solucionado", "color": "emerald"},
+        {"id": 6, "label": "Fechado", "color": "slate"}
+    ],
+    "priorityOptions": [
+        {"id": 1, "label": "1 - Muito Baixa"},
+        {"id": 2, "label": "2 - Baixa"},
+        {"id": 3, "label": "3 - Média"},
+        {"id": 4, "label": "4 - Alta"},
+        {"id": 5, "label": "5 - Muito Alta"}
+    ],
+    "urgencyOptions": [
+        {"id": 1, "label": "1 - Muito Baixa"},
+        {"id": 2, "label": "2 - Baixa"},
+        {"id": 3, "label": "3 - Média"},
+        {"id": 4, "label": "4 - Alta"},
+        {"id": 5, "label": "5 - Muito Alta"}
+    ],
+    "impactOptions": [
+        {"id": 1, "label": "1 - Muito Baixa"},
+        {"id": 2, "label": "2 - Baixa"},
+        {"id": 3, "label": "3 - Média"},
+        {"id": 4, "label": "4 - Alta"},
+        {"id": 5, "label": "5 - Muito Alta"}
+    ],
+    "typeOptions": [
+        {"id": 1, "label": "Incidente (Falha / Corretiva)"},
+        {"id": 2, "label": "Requisição (Rotina Preventiva TI)"}
+    ]
+}
+
+async def glpi_get_reference_data(base_url: str, app_token: str, user_token: str) -> dict:
+    """Busca dados de referência reais do GLPI (Usuários, Categorias, Grupos, Entidades)."""
+    url = (base_url or "").strip().rstrip("/")
+    if not url or not app_token or not user_token:
+        return DEFAULT_IT_REFERENCE_DATA
+
+    session = None
+    try:
+        session = await glpi_init_session(url, app_token=app_token, user_token=user_token)
+        session_token = session["session_token"]
+
+        headers = {
+            "Content-Type": "application/json",
+            "Session-Token": session_token,
+            "App-Token": app_token
+        }
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            users_res = await client.get(f"{url}/User?range=0-200", headers=headers)
+            cat_res = await client.get(f"{url}/ITILCategory?range=0-200", headers=headers)
+            group_res = await client.get(f"{url}/Group?range=0-100", headers=headers)
+            entity_res = await client.get(f"{url}/Entity?range=0-50", headers=headers)
+
+            users = []
+            if users_res.status_code == 200:
+                data = users_res.json()
+                if isinstance(data, list):
+                    for u in data:
+                        users.append({
+                            "id": int(u.get("id")),
+                            "name": u.get("name", ""),
+                            "realname": u.get("realname", ""),
+                            "firstname": u.get("firstname", ""),
+                            "email": u.get("email", f"{u.get('name', '')}@digitronbalancas.com.br"),
+                            "active": u.get("is_active", 1),
+                            "entityId": u.get("entities_id", 0),
+                            "isTechnician": True
+                        })
+
+            categories = []
+            if cat_res.status_code == 200:
+                data = cat_res.json()
+                if isinstance(data, list):
+                    for c in data:
+                        categories.append({
+                            "id": int(c.get("id")),
+                            "name": c.get("name", ""),
+                            "completeName": c.get("completename", c.get("name", "")),
+                            "parentId": c.get("itilcategories_id"),
+                            "entityId": c.get("entities_id", 0),
+                            "isIt": True
+                        })
+
+            groups = []
+            if group_res.status_code == 200:
+                data = group_res.json()
+                if isinstance(data, list):
+                    for g in data:
+                        groups.append({
+                            "id": int(g.get("id")),
+                            "name": g.get("name", ""),
+                            "completeName": g.get("completename", g.get("name", "")),
+                            "entityId": g.get("entities_id", 0),
+                            "canAssign": g.get("is_assign", 1) != 0
+                        })
+
+            entities = []
+            if entity_res.status_code == 200:
+                data = entity_res.json()
+                if isinstance(data, list):
+                    for e in data:
+                        entities.append({
+                            "id": int(e.get("id")),
+                            "name": e.get("name", ""),
+                            "completeName": e.get("completename", e.get("name", ""))
+                        })
+
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            now_sp = datetime.now(ZoneInfo("America/Sao_Paulo")).isoformat()
+
+            return {
+                "isLive": True,
+                "lastSyncedAt": now_sp,
+                "users": users or DEFAULT_IT_REFERENCE_DATA["users"],
+                "categories": categories or DEFAULT_IT_REFERENCE_DATA["categories"],
+                "groups": groups or DEFAULT_IT_REFERENCE_DATA["groups"],
+                "technicians": [u for u in users if u.get("isTechnician")] or DEFAULT_IT_REFERENCE_DATA["technicians"],
+                "entities": entities or DEFAULT_IT_REFERENCE_DATA["entities"],
+                "statusOptions": DEFAULT_IT_REFERENCE_DATA["statusOptions"],
+                "priorityOptions": DEFAULT_IT_REFERENCE_DATA["priorityOptions"],
+                "urgencyOptions": DEFAULT_IT_REFERENCE_DATA["urgencyOptions"],
+                "impactOptions": DEFAULT_IT_REFERENCE_DATA["impactOptions"],
+                "typeOptions": DEFAULT_IT_REFERENCE_DATA["typeOptions"]
+            }
+
+    except Exception:
+        return DEFAULT_IT_REFERENCE_DATA
+    finally:
+        if session:
+            await glpi_kill_session(url, session["session_token"], app_token)
+

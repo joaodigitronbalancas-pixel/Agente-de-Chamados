@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { ExecutionLog } from '../types';
+import { formatDateTime } from '../utils/dateTime';
+
 import { 
   History, 
   Search, 
@@ -199,8 +201,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ logs, onClearLogs, onR
 
                     {/* Date */}
                     <td className="py-3.5 px-4 whitespace-nowrap text-slate-300 font-mono text-[11px]">
-                      {new Date(log.triggeredAt).toLocaleString('pt-BR')}
+                      {formatDateTime(log.triggeredAt)}
                     </td>
+
 
                     {/* Latency */}
                     <td className="py-3.5 px-4 whitespace-nowrap text-slate-400 font-mono text-[11px]">
@@ -239,8 +242,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ logs, onClearLogs, onR
                 <div>
                   <h3 className="text-sm font-bold text-white">Auditoria do Chamado GLPI</h3>
                   <p className="text-xs text-slate-400">
-                    {selectedLog.glpiTicketId ? `Chamado #${selectedLog.glpiTicketId}` : 'Tentativa de Envio'} • {new Date(selectedLog.triggeredAt).toLocaleString('pt-BR')}
+                    {selectedLog.glpiTicketId ? `Chamado #${selectedLog.glpiTicketId}` : 'Tentativa de Envio'} • {formatDateTime(selectedLog.triggeredAt)}
                   </p>
+
                 </div>
               </div>
               <button

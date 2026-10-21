@@ -5,6 +5,13 @@ import fs from 'fs';
 import os from 'os';
 import dns from 'dns/promises';
 import { fileURLToPath } from 'url';
+import { 
+  getSaoPauloParts, 
+  getSaoPauloTodayIso, 
+  calculateNextRunInSaoPaulo, 
+  createSaoPauloDate, 
+  parseDateSafe 
+} from './src/utils/dateTime';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -312,14 +319,14 @@ function saveDb() {
 const resetCodes: ResetCode[] = [];
 const executingRoutines = new Set<string>();
 
-// Macro variable replacement
+// Macro variable replacement in America/Sao_Paulo operational timezone
 function replaceMacros(text: string): string {
-  const d = new Date();
-  const day = String(d.getDate()).padStart(2, '0');
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const year = d.getFullYear();
-  const hours = String(d.getHours()).padStart(2, '0');
-  const minutes = String(d.getMinutes()).padStart(2, '0');
+  const parts = getSaoPauloParts(new Date());
+  const day = String(parts.day).padStart(2, '0');
+  const month = String(parts.month).padStart(2, '0');
+  const year = parts.year;
+  const hours = String(parts.hour).padStart(2, '0');
+  const minutes = String(parts.minute).padStart(2, '0');
 
   const monthsPt = [
     'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
@@ -330,21 +337,25 @@ function replaceMacros(text: string): string {
     'Quinta-feira', 'Sexta-feira', 'Sábado'
   ];
 
+  const now = new Date();
   const startOfYear = new Date(year, 0, 1);
-  const daysDiff = Math.floor((d.getTime() - startOfYear.getTime()) / (24 * 3600 * 1000));
-  const weekNumber = Math.ceil((daysDiff + startOfYear.getDay() + 1) / 7);
+  const daysDiff = Math.floor((now.getTime() - startOfYear.getTime()) / (24 * 3600 * 1000));
+  const weekNumber = Math.max(1, Math.ceil((daysDiff + startOfYear.getDay() + 1) / 7));
+
+  const monthName = monthsPt[parts.month - 1] || 'Janeiro';
+  const weekDayName = weekDaysPt[parts.dayOfWeek] || 'Segunda-feira';
 
   const replacements: Record<string, string> = {
     '{data}': `${day}/${month}/${year}`,
     '{data_iso}': `${year}-${month}-${day}`,
     '{hora}': `${hours}:${minutes}`,
     '{dia}': day,
-    '{mes}': monthsPt[d.getMonth()],
+    '{mes}': monthName,
     '{mes_num}': month,
     '{ano}': String(year),
     '{mes_ano}': `${month}/${year}`,
-    '{mes_extenso}': monthsPt[d.getMonth()],
-    '{dia_semana}': weekDaysPt[d.getDay()],
+    '{mes_extenso}': monthName,
+    '{dia_semana}': weekDayName,
     '{semana_ano}': `Semana ${weekNumber}`,
     '{empresa}': 'Digi-Tron Balanças',
     '{responsavel}': 'Equipe de TI Digi-Tron'
@@ -357,61 +368,12 @@ function replaceMacros(text: string): string {
   return res;
 }
 
-// Next run calculation
+// Next run calculation in America/Sao_Paulo timezone
 function computeNextRun(routine: any): string {
-  const [targetH, targetM] = (routine.time || '08:00').split(':').map(Number);
-  const now = new Date();
-
-  switch (routine.frequency) {
-    case 'daily': {
-      const candidate = new Date(now);
-      candidate.setHours(targetH, targetM, 0, 0);
-      if (candidate <= now) {
-        candidate.setDate(candidate.getDate() + 1);
-      }
-      return candidate.toISOString();
-    }
-    case 'weekly': {
-      const days = routine.daysOfWeek && routine.daysOfWeek.length > 0 ? routine.daysOfWeek : [1];
-      for (let offset = 0; offset <= 7; offset++) {
-        const candidate = new Date(now);
-        candidate.setDate(candidate.getDate() + offset);
-        candidate.setHours(targetH, targetM, 0, 0);
-        if (days.includes(candidate.getDay()) && candidate > now) {
-          return candidate.toISOString();
-        }
-      }
-      const nextWeek = new Date(now);
-      nextWeek.setDate(nextWeek.getDate() + 7);
-      nextWeek.setHours(targetH, targetM, 0, 0);
-      return nextWeek.toISOString();
-    }
-    case 'biweekly': {
-      const candidate = new Date(now);
-      candidate.setDate(candidate.getDate() + 14);
-      candidate.setHours(targetH, targetM, 0, 0);
-      return candidate.toISOString();
-    }
-    case 'monthly': {
-      const targetDay = routine.dayOfMonth || 1;
-      let candidate = new Date(now.getFullYear(), now.getMonth(), targetDay, targetH, targetM, 0, 0);
-      if (candidate <= now) {
-        candidate = new Date(now.getFullYear(), now.getMonth() + 1, targetDay, targetH, targetM, 0, 0);
-      }
-      return candidate.toISOString();
-    }
-    case 'custom_interval': {
-      const hours = routine.customIntervalHours || 12;
-      return new Date(now.getTime() + hours * 3600 * 1000).toISOString();
-    }
-    default: {
-      const candidate = new Date(now);
-      candidate.setHours(targetH, targetM, 0, 0);
-      if (candidate <= now) candidate.setDate(candidate.getDate() + 1);
-      return candidate.toISOString();
-    }
-  }
+  const nextDate = calculateNextRunInSaoPaulo(routine, new Date());
+  return nextDate.toISOString();
 }
+
 
 function maskSecret(token?: string | null): string | null {
   if (!token) return null;
@@ -1175,40 +1137,433 @@ app.post('/api/glpi/test-create-ticket', async (req: Request, res: Response) => 
   }
 });
 
-// GLPI: Fetch Real Tickets from GLPI
-app.get('/api/glpi/real-tickets', async (_req: Request, res: Response) => {
+// GLPI Reference Data Cache & Fallbacks
+let refDataCache: any = null;
+let refDataCachedAt = 0;
+const REF_DATA_TTL_MS = 5 * 60 * 1000;
+
+const DEFAULT_IT_REFERENCE_DATA = {
+  isLive: false,
+  lastSyncedAt: new Date().toISOString(),
+  users: [
+    { id: 2, name: 'joao.leopoldino', realname: 'Leopoldino', firstname: 'João', email: 'joao.leopoldino@digitronbalancas.com.br', active: 1, entityId: 0, isTechnician: true },
+    { id: 3, name: 'ti.suporte', realname: 'Suporte', firstname: 'TI Digi-Tron', email: 'suporte.ti@digitronbalancas.com.br', active: 1, entityId: 0, isTechnician: true },
+    { id: 4, name: 'admin.infra', realname: 'Infraestrutura', firstname: 'Admin TI', email: 'infra@digitronbalancas.com.br', active: 1, entityId: 0, isTechnician: true },
+    { id: 5, name: 'monitor.servidores', realname: 'Monitoramento', firstname: 'Agente Zabbix/GLPI', email: 'monitoramento@digitronbalancas.com.br', active: 1, entityId: 0, isTechnician: false }
+  ],
+  categories: [
+    { id: 1, name: 'TI - Infraestrutura e Servidores', completeName: 'TI > Infraestrutura e Servidores', entityId: 0, isIt: true },
+    { id: 2, name: 'TI - Backups e Armazenamento', completeName: 'TI > Backups e Armazenamento', entityId: 0, isIt: true },
+    { id: 3, name: 'TI - Redes e Conectividade', completeName: 'TI > Redes e Conectividade', entityId: 0, isIt: true },
+    { id: 4, name: 'TI - Sistemas e ERP Factory OS', completeName: 'TI > Sistemas e ERP Factory OS', entityId: 0, isIt: true },
+    { id: 5, name: 'TI - Suporte a Usuários e Estações', completeName: 'TI > Suporte a Usuários e Estações', entityId: 0, isIt: true },
+    { id: 6, name: 'TI - Segurança da Informação', completeName: 'TI > Segurança da Informação', entityId: 0, isIt: true },
+    { id: 7, name: 'TI - Bancos de Dados', completeName: 'TI > Bancos de Dados', entityId: 0, isIt: true },
+    { id: 8, name: 'TI - Periféricos e Impressão', completeName: 'TI > Periféricos e Impressão', entityId: 0, isIt: true }
+  ],
+  groups: [
+    { id: 1, name: 'Equipe de TI', completeName: 'TI > Equipe de TI', entityId: 0, canAssign: true },
+    { id: 2, name: 'Infraestrutura e Redes', completeName: 'TI > Infraestrutura e Redes', entityId: 0, canAssign: true },
+    { id: 3, name: 'Sistemas e ERP', completeName: 'TI > Sistemas e ERP', entityId: 0, canAssign: true }
+  ],
+  technicians: [
+    { id: 2, name: 'joao.leopoldino', realname: 'Leopoldino', firstname: 'João', email: 'joao.leopoldino@digitronbalancas.com.br', groupId: 1 },
+    { id: 3, name: 'ti.suporte', realname: 'Suporte', firstname: 'TI Digi-Tron', email: 'suporte.ti@digitronbalancas.com.br', groupId: 1 }
+  ],
+  entities: [
+    { id: 0, name: 'Digi-Tron Matriz', completeName: 'Entidade Raiz > Digi-Tron Matriz' }
+  ],
+  statusOptions: [
+    { id: 1, label: 'Novo', color: 'blue' },
+    { id: 2, label: 'Em atendimento (atribuído)', color: 'amber' },
+    { id: 3, label: 'Em atendimento (planejado)', color: 'purple' },
+    { id: 4, label: 'Pendente', color: 'orange' },
+    { id: 5, label: 'Solucionado', color: 'emerald' },
+    { id: 6, label: 'Fechado', color: 'slate' }
+  ],
+  priorityOptions: [
+    { id: 1, label: '1 - Muito Baixa' },
+    { id: 2, label: '2 - Baixa' },
+    { id: 3, label: '3 - Média' },
+    { id: 4, label: '4 - Alta' },
+    { id: 5, label: '5 - Muito Alta' }
+  ],
+  urgencyOptions: [
+    { id: 1, label: '1 - Muito Baixa' },
+    { id: 2, label: '2 - Baixa' },
+    { id: 3, label: '3 - Média' },
+    { id: 4, label: '4 - Alta' },
+    { id: 5, label: '5 - Muito Alta' }
+  ],
+  impactOptions: [
+    { id: 1, label: '1 - Muito Baixa' },
+    { id: 2, label: '2 - Baixa' },
+    { id: 3, label: '3 - Média' },
+    { id: 4, label: '4 - Alta' },
+    { id: 5, label: '5 - Muito Alta' }
+  ],
+  typeOptions: [
+    { id: 1, label: 'Incidente (Falha / Corretiva)' },
+    { id: 2, label: 'Requisição (Rotina Preventiva TI)' }
+  ]
+};
+
+async function fetchGlpiReferenceData(force = false) {
+  if (!force && refDataCache && Date.now() - refDataCachedAt < REF_DATA_TTL_MS) {
+    return refDataCache;
+  }
+
   const config = db.glpiConfig;
-  if (config.connectionStatus !== 'connected' && (!config.url || !config.appToken)) {
-    return res.json([]);
+  const baseUrl = (config.url || '').trim().replace(/\/+$/, '');
+  if (!baseUrl || !config.appToken) {
+    return DEFAULT_IT_REFERENCE_DATA;
   }
 
   let sessionToken = '';
-  const baseUrl = config.url.trim().replace(/\/+$/, '');
   try {
     const sessionRes = await glpiInitSession(config);
     sessionToken = sessionRes.sessionToken;
 
-    const ticketsRes = await fetch(`${baseUrl}/Ticket?expand_dropdowns=true&limit=10&order=DESC&sort=id`, {
-      method: 'GET',
+    const headers = {
+      'Content-Type': 'application/json',
+      'Session-Token': sessionToken,
+      'App-Token': config.appToken
+    };
+
+    // Parallel fetch from GLPI API
+    const [usersRes, catRes, groupRes, entityRes] = await Promise.all([
+      fetch(`${baseUrl}/User?range=0-200`, { headers }).catch(() => null),
+      fetch(`${baseUrl}/ITILCategory?range=0-200`, { headers }).catch(() => null),
+      fetch(`${baseUrl}/Group?range=0-100`, { headers }).catch(() => null),
+      fetch(`${baseUrl}/Entity?range=0-50`, { headers }).catch(() => null)
+    ]);
+
+    let users = DEFAULT_IT_REFERENCE_DATA.users;
+    if (usersRes && usersRes.ok) {
+      const data = await usersRes.json();
+      if (Array.isArray(data) && data.length > 0) {
+        users = data.map((u: any) => ({
+          id: Number(u.id),
+          name: u.name || '',
+          realname: u.realname || '',
+          firstname: u.firstname || '',
+          email: u.email || `${u.name}@digitronbalancas.com.br`,
+          active: u.is_active ?? 1,
+          entityId: u.entities_id ?? 0,
+          isTechnician: true
+        }));
+      }
+    }
+
+    let categories = DEFAULT_IT_REFERENCE_DATA.categories;
+    if (catRes && catRes.ok) {
+      const data = await catRes.json();
+      if (Array.isArray(data) && data.length > 0) {
+        categories = data.map((c: any) => ({
+          id: Number(c.id),
+          name: c.name || '',
+          completeName: c.completename || c.name || '',
+          parentId: c.itilcategories_id,
+          entityId: c.entities_id ?? 0,
+          isIt: true
+        }));
+      }
+    }
+
+    let groups = DEFAULT_IT_REFERENCE_DATA.groups;
+    if (groupRes && groupRes.ok) {
+      const data = await groupRes.json();
+      if (Array.isArray(data) && data.length > 0) {
+        groups = data.map((g: any) => ({
+          id: Number(g.id),
+          name: g.name || '',
+          completeName: g.completename || g.name || '',
+          entityId: g.entities_id ?? 0,
+          canAssign: g.is_assign !== 0
+        }));
+      }
+    }
+
+    let entities = DEFAULT_IT_REFERENCE_DATA.entities;
+    if (entityRes && entityRes.ok) {
+      const data = await entityRes.json();
+      if (Array.isArray(data) && data.length > 0) {
+        entities = data.map((e: any) => ({
+          id: Number(e.id),
+          name: e.name || '',
+          completeName: e.completename || e.name || ''
+        }));
+      }
+    }
+
+    const technicians = users.filter((u: any) => u.isTechnician);
+
+    refDataCache = {
+      isLive: true,
+      lastSyncedAt: new Date().toISOString(),
+      users,
+      categories,
+      groups,
+      technicians: technicians.length > 0 ? technicians : DEFAULT_IT_REFERENCE_DATA.technicians,
+      entities,
+      statusOptions: DEFAULT_IT_REFERENCE_DATA.statusOptions,
+      priorityOptions: DEFAULT_IT_REFERENCE_DATA.priorityOptions,
+      urgencyOptions: DEFAULT_IT_REFERENCE_DATA.urgencyOptions,
+      impactOptions: DEFAULT_IT_REFERENCE_DATA.impactOptions,
+      typeOptions: DEFAULT_IT_REFERENCE_DATA.typeOptions
+    };
+    refDataCachedAt = Date.now();
+
+    await glpiKillSession(baseUrl, sessionToken, config.appToken);
+    return refDataCache;
+  } catch (err) {
+    if (sessionToken) await glpiKillSession(baseUrl, sessionToken, config.appToken);
+    return DEFAULT_IT_REFERENCE_DATA;
+  }
+}
+
+// Endpoint: Reference Data
+app.get('/api/glpi/reference-data', async (_req: Request, res: Response) => {
+  const data = await fetchGlpiReferenceData(false);
+  return res.json(data);
+});
+
+app.post('/api/glpi/reference-data/refresh', async (_req: Request, res: Response) => {
+  refDataCache = null;
+  const data = await fetchGlpiReferenceData(true);
+  return res.json(data);
+});
+
+// Endpoint: List Real Tickets from GLPI
+app.get('/api/glpi/tickets', async (req: Request, res: Response) => {
+  const config = db.glpiConfig;
+  const baseUrl = (config.url || '').trim().replace(/\/+$/, '');
+  const limit = parseInt(req.query.limit as string || '50', 10);
+  const search = ((req.query.search as string) || '').toLowerCase().trim();
+  const statusFilter = req.query.status ? parseInt(req.query.status as string, 10) : null;
+
+  if (config.connectionStatus === 'connected' && baseUrl && config.appToken) {
+    let sessionToken = '';
+    try {
+      const sessionRes = await glpiInitSession(config);
+      sessionToken = sessionRes.sessionToken;
+
+      const ticketsRes = await fetch(`${baseUrl}/Ticket?expand_dropdowns=true&limit=${limit}&order=DESC&sort=id`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          'Session-Token': sessionToken,
+          'App-Token': config.appToken
+        }
+      });
+
+      if (ticketsRes.ok) {
+        const rawTickets = await ticketsRes.json();
+        await glpiKillSession(baseUrl, sessionToken, config.appToken);
+
+        const statusMap: Record<number, string> = {
+          1: 'Novo',
+          2: 'Em atendimento (atribuído)',
+          3: 'Em atendimento (planejado)',
+          4: 'Pendente',
+          5: 'Solucionado',
+          6: 'Fechado'
+        };
+
+        let tickets = (Array.isArray(rawTickets) ? rawTickets : []).map((t: any) => ({
+          id: Number(t.id),
+          name: t.name || 'Sem título',
+          content: t.content || '',
+          status: Number(t.status || 1),
+          statusName: statusMap[Number(t.status)] || 'Novo',
+          urgency: Number(t.urgency || 3),
+          priority: Number(t.priority || 3),
+          impact: Number(t.impact || 3),
+          type: Number(t.type || 2),
+          typeName: Number(t.type) === 1 ? 'Incidente' : 'Requisição',
+          categoryId: t.itilcategories_id,
+          categoryName: typeof t.itilcategories_id === 'string' ? t.itilcategories_id : 'TI - Geral',
+          entityId: t.entities_id,
+          entityName: typeof t.entities_id === 'string' ? t.entities_id : 'Digi-Tron',
+          requesterName: t._users_id_requester || t.users_id_recipient || 'Equipe Digi-Tron',
+          technicianName: t._users_id_assign || 'Equipe de TI',
+          groupName: t._groups_id_assign || 'Equipe de TI',
+          dateCreation: t.date || new Date().toISOString(),
+          dateMod: t.date_mod || t.date || new Date().toISOString(),
+          solvedDate: t.solvedate,
+          closedDate: t.closedate
+        }));
+
+        if (search) {
+          tickets = tickets.filter((t: any) =>
+            t.name.toLowerCase().includes(search) ||
+            String(t.id).includes(search) ||
+            (t.requesterName && t.requesterName.toLowerCase().includes(search))
+          );
+        }
+
+        if (statusFilter) {
+          tickets = tickets.filter((t: any) => t.status === statusFilter);
+        }
+
+        return res.json(tickets);
+      }
+    } catch (e) {
+      if (sessionToken) await glpiKillSession(baseUrl, sessionToken, config.appToken);
+    }
+  }
+
+  // Fallback to local logs that represent dispatched tickets
+  const fallbackTickets = db.logs
+    .filter(l => l.status === 'success' && l.glpiTicketId)
+    .map(l => ({
+      id: Number(l.glpiTicketId),
+      name: l.routineTitle,
+      content: l.requestPayload?.input?.content || '',
+      status: 2,
+      statusName: 'Em atendimento (atribuído)',
+      urgency: 3,
+      priority: 3,
+      impact: 3,
+      type: 2,
+      typeName: 'Requisição',
+      categoryId: 1,
+      categoryName: l.categoryName,
+      entityId: 0,
+      entityName: 'Digi-Tron Matriz',
+      requesterName: l.requestPayload?.input?._users_id_requester || 'joao.leopoldino@digitronbalancas.com.br',
+      technicianName: 'Equipe de TI',
+      groupName: 'Equipe de TI',
+      dateCreation: l.triggeredAt,
+      dateMod: l.triggeredAt
+    }));
+
+  return res.json(fallbackTickets);
+});
+
+// Endpoint: Legacy real-tickets (kept for backward compatibility)
+app.get('/api/glpi/real-tickets', async (req: Request, res: Response) => {
+  const tickets = await (app as any)._router.handle({ ...req, url: '/api/glpi/tickets', method: 'GET' }, res);
+  return tickets;
+});
+
+// Endpoint: Create Real Ticket in GLPI with Real IDs
+app.post('/api/glpi/tickets', async (req: Request, res: Response) => {
+  const {
+    title,
+    description,
+    categoryId,
+    categoryName,
+    requesterId,
+    groupId,
+    technicianId,
+    entityId,
+    type,
+    urgency,
+    impact,
+    priority,
+    equipment
+  } = req.body;
+
+  if (!title || !description) {
+    return res.status(400).json({ error: 'Título e descrição do chamado de TI são obrigatórios.' });
+  }
+
+  const scopeCheck = isItScope(title, description, categoryName || '');
+  if (!scopeCheck.valid) {
+    return res.status(400).json({ error: `Bloqueio de Escopo: ${scopeCheck.reason}` });
+  }
+
+  const config = db.glpiConfig;
+  const baseUrl = (config.url || '').trim().replace(/\/+$/, '');
+
+  let fullContent = description;
+  if (equipment && equipment.trim()) {
+    fullContent += `\n\n**Equipamento / Ativo de TI:** ${equipment.trim()}`;
+  }
+
+  let sessionToken = '';
+  const startTime = Date.now();
+  try {
+    const sessionRes = await glpiInitSession(config);
+    sessionToken = sessionRes.sessionToken;
+
+    const payload: any = {
+      input: {
+        name: title,
+        content: fullContent,
+        type: Number(type) || 2,
+        urgency: Number(urgency) || 3,
+        impact: Number(impact) || 3,
+        priority: Number(priority) || 3,
+        itilcategories_id: Number(categoryId) || 1,
+        entities_id: Number(entityId) || 0
+      }
+    };
+
+    if (requesterId) payload.input._users_id_requester = Number(requesterId);
+    if (groupId) payload.input._groups_id_assign = Number(groupId);
+    if (technicianId) payload.input._users_id_assign = Number(technicianId);
+
+    const ticketRes = await fetch(`${baseUrl}/Ticket`, {
+      method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Session-Token': sessionToken,
         'App-Token': config.appToken
-      }
+      },
+      body: JSON.stringify(payload)
     });
 
-    if (!ticketsRes.ok) {
-      throw new Error(`Falha ao ler chamados reais (HTTP ${ticketsRes.status})`);
+    const durationMs = Date.now() - startTime;
+    const resData = await ticketRes.json().catch(() => ({}));
+
+    if (!ticketRes.ok) {
+      const errMsg = Array.isArray(resData) ? resData[0] : (resData?.message || `HTTP ${ticketRes.status}`);
+      throw new Error(`Falha ao registrar chamado no GLPI: ${errMsg}`);
     }
 
-    const tickets = await ticketsRes.json();
+    const ticketId = resData.id || resData?.input?.id;
+    if (!ticketId) {
+      throw new Error('GLPI processou a requisição mas não retornou o ID do chamado.');
+    }
+
+    const logEntry = {
+      id: `manual-${Date.now()}`,
+      routineId: 'manual-dispatch',
+      routineTitle: title,
+      categoryName: categoryName || 'TI - Infraestrutura e Servidores',
+      triggeredAt: new Date().toISOString(),
+      status: 'success' as const,
+      glpiTicketId: ticketId,
+      glpiTicketUrl: `${baseUrl.replace('/apirest.php', '')}/front/ticket.form.php?id=${ticketId}`,
+      httpStatusCode: ticketRes.status,
+      executionType: 'manual' as const,
+      executedBy: 'Técnico de TI (Painel)',
+      message: `Chamado #${ticketId} criado com sucesso no GLPI.`,
+      durationMs,
+      requestPayload: payload,
+      responsePayload: resData
+    };
+
+    db.logs.unshift(logEntry);
+    if (db.logs.length > 500) db.logs.pop();
+    saveDb();
+
     await glpiKillSession(baseUrl, sessionToken, config.appToken);
-    return res.json(Array.isArray(tickets) ? tickets : []);
+
+    return res.json({
+      success: true,
+      ticketId,
+      ticketUrl: logEntry.glpiTicketUrl,
+      message: `Chamado de TI #${ticketId} criado com sucesso no GLPI!`
+    });
   } catch (err: any) {
     if (sessionToken) await glpiKillSession(baseUrl, sessionToken, config.appToken);
-    return res.status(500).json({ error: err.message });
+    return res.status(400).json({ error: err.message });
   }
 });
+
 
 // Routines: List
 app.get('/api/routines', (_req: Request, res: Response) => {
@@ -1367,7 +1722,7 @@ app.get('/api/stats', (_req: Request, res: Response) => {
 
   const nextRunAt = activeNextRuns.length > 0 ? new Date(activeNextRuns[0]).toISOString() : null;
 
-  const todayStr = new Date().toISOString().split('T')[0];
+  const todayStr = getSaoPauloTodayIso();
   const dispatchedToday = db.logs.filter(l => (l.triggeredAt || '').startsWith(todayStr) && l.status === 'success').length;
 
   return res.json({

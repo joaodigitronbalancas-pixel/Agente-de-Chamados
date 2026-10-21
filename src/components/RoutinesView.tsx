@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { RoutineSchedule, RecurrenceType } from '../types';
 import { formatRelativeCountdown, getFrequencyLabel } from '../utils/scheduler';
+import { formatDateTime } from '../utils/dateTime';
+
 import { 
   CalendarClock, 
   Play, 
@@ -244,9 +246,10 @@ export const RoutinesView: React.FC<RoutinesViewProps> = ({
                         <span className="text-slate-500">Próxima Execução:</span>
                         <span className="text-amber-400 font-semibold font-mono">
                           {routine.isActive
-                            ? `${formatRelativeCountdown(routine.nextRunAt)} (${new Date(routine.nextRunAt).toLocaleDateString('pt-BR')} ${new Date(routine.nextRunAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })})`
+                            ? `${formatRelativeCountdown(routine.nextRunAt)} (${formatDateTime(routine.nextRunAt)})`
                             : 'Pausada'}
                         </span>
+
                       </div>
 
                       <span>•</span>

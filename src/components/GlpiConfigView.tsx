@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { GlpiConfig, RuntimeEnvironment, ConnectionTestResponse } from '../types';
 import { api } from '../services/api';
+import { formatDateTime } from '../utils/dateTime';
+
 import { 
   Server, 
   Key, 
@@ -334,8 +336,9 @@ export const GlpiConfigView: React.FC<GlpiConfigViewProps> = ({ config, onUpdate
         {config.lastCheck && (
           <div className="text-right text-[11px] text-slate-400 shrink-0 hidden md:block">
             <span>Última verificação:</span>
-            <div className="font-mono text-slate-300">{new Date(config.lastCheck).toLocaleString('pt-BR')}</div>
+            <div className="font-mono text-slate-300">{formatDateTime(config.lastCheck)}</div>
           </div>
+
         )}
       </div>
 

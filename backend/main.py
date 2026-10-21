@@ -15,6 +15,7 @@ from glpi_service import (
     glpi_test_connection,
     glpi_create_ticket,
     glpi_get_real_tickets,
+    glpi_get_reference_data,
     check_it_scope
 )
 from scheduler_service import (
@@ -118,6 +119,25 @@ class RoutineCreateRequest(BaseModel):
     technicalGroup: str = "Equipe de TI"
     entityId: int = 0
     tags: List[str] = ["TI"]
+
+class CreateTicketPayload(BaseModel):
+    title: str
+    description: str
+    categoryId: int = 1
+    categoryName: Optional[str] = "TI - Infraestrutura e Servidores"
+    requesterId: Optional[int] = None
+    requesterName: Optional[str] = None
+    groupId: Optional[int] = 1
+    groupName: Optional[str] = "Equipe de TI"
+    technicianId: Optional[int] = None
+    technicianName: Optional[str] = None
+    entityId: Optional[int] = 0
+    type: int = 2
+    urgency: int = 3
+    impact: int = 3
+    priority: int = 3
+    equipment: Optional[str] = None
+
 
 # ----------------- ROTAS DE AMBIENTE -----------------
 @app.get("/api/environment")
@@ -309,15 +329,80 @@ async def test_create_real_ticket_endpoint(req: TestCreateTicketRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@app.get("/api/glpi/real-tickets")
-async def get_real_tickets():
+@app.get("/api/glpi/reference-data")
+async def get_reference_data_endpoint():
     cfg = db.data.get("glpiConfig", {})
-    tickets = await glpi_get_real_tickets(
+    data = await glpi_get_reference_data(
         base_url=cfg.get("url", settings.GLPI_BASE_URL),
         app_token=cfg.get("appToken", settings.GLPI_APP_TOKEN),
         user_token=cfg.get("userToken", settings.GLPI_USER_TOKEN)
     )
-    return tickets
+    return data
+
+@app.post("/api/glpi/reference-data/refresh")
+async def refresh_reference_data_endpoint():
+    cfg = db.data.get("glpiConfig", {})
+    data = await glpi_get_reference_data(
+        base_url=cfg.get("url", settings.GLPI_BASE_URL),
+        app_token=cfg.get("appToken", settings.GLPI_APP_TOKEN),
+        user_token=cfg.get("userToken", settings.GLPI_USER_TOKEN)
+    )
+    return data
+
+@app.get("/api/glpi/tickets")
+async def get_tickets_endpoint():
+    cfg = db.data.get("glpiConfig", {})
+    raw_tickets = await glpi_get_real_tickets(
+        base_url=cfg.get("url", settings.GLPI_BASE_URL),
+        app_token=cfg.get("appToken", settings.GLPI_APP_TOKEN),
+        user_token=cfg.get("userToken", settings.GLPI_USER_TOKEN)
+    )
+    return raw_tickets
+
+@app.get("/api/glpi/real-tickets")
+async def get_real_tickets():
+    return await get_tickets_endpoint()
+
+@app.post("/api/glpi/tickets")
+async def create_ticket_endpoint(payload: CreateTicketPayload):
+    valid, reason = check_it_scope(payload.title, payload.description, payload.categoryName or "TI")
+    if not valid:
+        raise HTTPException(status_code=400, detail=reason)
+
+    cfg = db.data.get("glpiConfig", {})
+    url = cfg.get("url", settings.GLPI_BASE_URL)
+    app_token = cfg.get("appToken", settings.GLPI_APP_TOKEN)
+    user_token = cfg.get("userToken", settings.GLPI_USER_TOKEN)
+
+    content = payload.description
+    if payload.equipment:
+        content += f"\n\n**Equipamento / Ativo de TI:** {payload.equipment}"
+
+    try:
+        result = await glpi_create_ticket(
+            base_url=url,
+            app_token=app_token,
+            user_token=user_token,
+            title=payload.title,
+            content=content,
+            category_id=payload.categoryId,
+            category_name=payload.categoryName or "TI",
+            group_id=payload.groupId or 1,
+            urgency=payload.urgency,
+            impact=payload.impact,
+            priority=payload.priority,
+            entity_id=payload.entityId or 0,
+            requester=str(payload.requesterId) if payload.requesterId else "2"
+        )
+        return {
+            "success": True,
+            "ticketId": result["ticket_id"],
+            "ticketUrl": result["ticket_url"],
+            "message": f"Chamado #{result['ticket_id']} criado com sucesso no GLPI!"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # ----------------- ROTAS DE ROTINAS DE TI -----------------
 @app.get("/api/routines")

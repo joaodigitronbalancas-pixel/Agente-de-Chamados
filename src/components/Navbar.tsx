@@ -12,17 +12,19 @@ import {
   Wrench, 
   Server,
   Radio,
-  Cpu
+  Cpu,
+  Ticket
 } from 'lucide-react';
 
 interface NavbarProps {
-  currentTab: 'dashboard' | 'routines' | 'glpi' | 'history' | 'templates';
-  onSelectTab: (tab: 'dashboard' | 'routines' | 'glpi' | 'history' | 'templates') => void;
+  currentTab: 'dashboard' | 'routines' | 'tickets' | 'glpi' | 'history' | 'templates';
+  onSelectTab: (tab: 'dashboard' | 'routines' | 'tickets' | 'glpi' | 'history' | 'templates') => void;
   currentUser: User | null;
   onLogout: () => void;
   glpiConfig: GlpiConfig | null;
   onQuickTest: () => void;
 }
+
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
@@ -106,6 +108,18 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
 
             <button
+              onClick={() => onSelectTab('tickets')}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                currentTab === 'tickets'
+                  ? 'bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+              }`}
+            >
+              <Ticket className="w-4 h-4" />
+              Chamados GLPI
+            </button>
+
+            <button
               onClick={() => onSelectTab('templates')}
               className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                 currentTab === 'templates'
@@ -113,6 +127,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
               }`}
             >
+
               <BookTemplate className="w-4 h-4" />
               Modelos de TI
             </button>
@@ -219,7 +234,16 @@ export const Navbar: React.FC<NavbarProps> = ({
             Rotinas TI
           </button>
           <button
+            onClick={() => onSelectTab('tickets')}
+            className={`px-3 py-1 rounded-lg text-xs whitespace-nowrap font-medium ${
+              currentTab === 'tickets' ? 'bg-cyan-500 text-slate-950 font-bold' : 'bg-slate-800 text-slate-300'
+            }`}
+          >
+            Chamados GLPI
+          </button>
+          <button
             onClick={() => onSelectTab('templates')}
+
             className={`px-3 py-1 rounded-lg text-xs whitespace-nowrap font-medium ${
               currentTab === 'templates' ? 'bg-cyan-500 text-slate-950 font-bold' : 'bg-slate-800 text-slate-300'
             }`}

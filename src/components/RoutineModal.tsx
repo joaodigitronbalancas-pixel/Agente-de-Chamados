@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { RoutineSchedule, RecurrenceType, IT_CATEGORIES, ItCategory } from '../types';
+import { RoutineSchedule, RecurrenceType, IT_CATEGORIES, ItCategory, GlpiReferenceData } from '../types';
 import { replaceMacroVariables } from '../utils/scheduler';
+import { SearchableSelect, SelectOption } from './SearchableSelect';
 import { 
   CalendarClock, 
   Sparkles, 
@@ -21,13 +22,15 @@ interface RoutineModalProps {
   onClose: () => void;
   onSave: (routineData: Partial<RoutineSchedule>) => Promise<void>;
   initialData?: RoutineSchedule | null;
+  referenceData?: GlpiReferenceData | null;
 }
 
 export const RoutineModal: React.FC<RoutineModalProps> = ({
   isOpen,
   onClose,
   onSave,
-  initialData
+  initialData,
+  referenceData
 }) => {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -41,6 +44,7 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
   const [urgency, setUrgency] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [impact, setImpact] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [priority, setPriority] = useState<1 | 2 | 3 | 4 | 5>(3);
+  const [categoryId, setCategoryId] = useState<number>(1);
   const [categoryName, setCategoryName] = useState<ItCategory>('TI - Infraestrutura e Servidores');
   const [requester, setRequester] = useState('joao.leopoldino@digitronbalancas.com.br');
   const [assignee, setAssignee] = useState('Equipe de TI');
@@ -49,6 +53,7 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
   const [previewTab, setPreviewTab] = useState<'editor' | 'preview'>('editor');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
 
   useEffect(() => {
     if (initialData) {
@@ -150,6 +155,7 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
         urgency,
         impact,
         priority,
+        categoryId,
         categoryName,
         requester,
         assignee,
@@ -483,35 +489,65 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Categoria Exclusiva de TI
-                    </label>
-                    <select
-                      value={categoryName}
-                      onChange={(e) => setCategoryName(e.target.value as ItCategory)}
-                      className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-cyan-300 font-semibold focus:outline-none focus:border-cyan-500"
-                    >
-                      {IT_CATEGORIES.map((cat) => (
-                        <option key={cat} value={cat}>
-                          {cat}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Grupo Técnico no GLPI
-                    </label>
-                    <input
-                      type="text"
-                      value={technicalGroup}
-                      onChange={(e) => setTechnicalGroup(e.target.value)}
-                      placeholder="Equipe de TI"
-                      className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                  {referenceData && referenceData.categories.length > 0 ? (
+                    <SearchableSelect
+                      label="Categoria de TI no GLPI"
+                      options={referenceData.categories.map(c => ({
+                        value: c.id,
+                        label: c.completeName || c.name,
+                        badge: `ID: ${c.id}`
+                      }))}
+                      value={categoryId}
+                      onChange={(val, opt) => {
+                        setCategoryId(Number(val));
+                        if (opt) setCategoryName(opt.label as any);
+                      }}
                     />
-                  </div>
+                  ) : (
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Categoria Exclusiva de TI
+                      </label>
+                      <select
+                        value={categoryName}
+                        onChange={(e) => setCategoryName(e.target.value as ItCategory)}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-cyan-300 font-semibold focus:outline-none focus:border-cyan-500"
+                      >
+                        {IT_CATEGORIES.map((cat) => (
+                          <option key={cat} value={cat}>
+                            {cat}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  {referenceData && referenceData.groups.length > 0 ? (
+                    <SearchableSelect
+                      label="Grupo Técnico Responsável"
+                      options={referenceData.groups.map(g => ({
+                        value: g.name,
+                        label: g.name,
+                        subLabel: g.completeName,
+                        badge: `ID: ${g.id}`
+                      }))}
+                      value={technicalGroup}
+                      onChange={(val) => setTechnicalGroup(String(val))}
+                    />
+                  ) : (
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Grupo Técnico no GLPI
+                      </label>
+                      <input
+                        type="text"
+                        value={technicalGroup}
+                        onChange={(e) => setTechnicalGroup(e.target.value)}
+                        placeholder="Equipe de TI"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -565,32 +601,64 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Requerente de TI
-                    </label>
-                    <input
-                      type="text"
+                  {referenceData && referenceData.users.length > 0 ? (
+                    <SearchableSelect
+                      label="Requerente Oficial no GLPI"
+                      options={referenceData.users.map(u => ({
+                        value: u.email || u.name,
+                        label: `${u.firstname ? `${u.firstname} ${u.realname}` : u.name} (#${u.id})`,
+                        subLabel: u.email || `${u.name}@digitronbalancas.com.br`,
+                        badge: u.name
+                      }))}
                       value={requester}
-                      onChange={(e) => setRequester(e.target.value)}
-                      placeholder="joao.leopoldino@digitronbalancas.com.br"
-                      className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      onChange={(val) => setRequester(String(val))}
                     />
-                  </div>
+                  ) : (
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Requerente de TI
+                      </label>
+                      <input
+                        type="text"
+                        value={requester}
+                        onChange={(e) => setRequester(e.target.value)}
+                        placeholder="joao.leopoldino@digitronbalancas.com.br"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      />
+                    </div>
+                  )}
 
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Técnico Atribuído
-                    </label>
-                    <input
-                      type="text"
+                  {referenceData && referenceData.technicians.length > 0 ? (
+                    <SearchableSelect
+                      label="Técnico Atribuído (GLPI)"
+                      options={[
+                        { value: 'Equipe de TI', label: 'Equipe de TI (Pool)' },
+                        ...referenceData.technicians.map(t => ({
+                          value: t.firstname ? `${t.firstname} ${t.realname}` : t.name,
+                          label: `${t.firstname ? `${t.firstname} ${t.realname}` : t.name} (Técnico TI)`,
+                          subLabel: t.email,
+                          badge: `ID: ${t.id}`
+                        }))
+                      ]}
                       value={assignee}
-                      onChange={(e) => setAssignee(e.target.value)}
-                      placeholder="Equipe de TI"
-                      className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      onChange={(val) => setAssignee(String(val))}
                     />
-                  </div>
+                  ) : (
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Técnico Atribuído
+                      </label>
+                      <input
+                        type="text"
+                        value={assignee}
+                        onChange={(e) => setAssignee(e.target.value)}
+                        placeholder="Equipe de TI"
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      />
+                    </div>
+                  )}
                 </div>
+
 
                 <div>
                   <label className="block text-[11px] font-medium text-slate-400 mb-1">

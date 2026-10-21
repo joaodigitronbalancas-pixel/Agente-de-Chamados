@@ -1,16 +1,28 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { User, RoutineSchedule, ExecutionLog, GlpiConfig, DashboardStats, RoutineTemplate } from './types';
+import { 
+  User, 
+  RoutineSchedule, 
+  ExecutionLog, 
+  GlpiConfig, 
+  DashboardStats, 
+  RoutineTemplate,
+  GlpiReferenceData,
+  CreateGlpiTicketPayload
+} from './types';
 import { api } from './services/api';
 import { INITIAL_USER } from './data/initialData';
 import { Navbar } from './components/Navbar';
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardView } from './components/DashboardView';
 import { RoutinesView } from './components/RoutinesView';
+import { TicketsView } from './components/TicketsView';
 import { GlpiConfigView } from './components/GlpiConfigView';
 import { HistoryView } from './components/HistoryView';
 import { TemplatesView } from './components/TemplatesView';
 import { RoutineModal } from './components/RoutineModal';
+import { CreateTicketModal } from './components/CreateTicketModal';
 import { CheckCircle2, AlertCircle, RefreshCw, X } from 'lucide-react';
+
 
 export default function App() {
   // Auth state
@@ -27,18 +39,20 @@ export default function App() {
   });
 
   // Navigation tab
-  const [currentTab, setCurrentTab] = useState<'dashboard' | 'routines' | 'glpi' | 'history' | 'templates'>('dashboard');
+  const [currentTab, setCurrentTab] = useState<'dashboard' | 'routines' | 'tickets' | 'glpi' | 'history' | 'templates'>('dashboard');
 
   // Core Data States
   const [routines, setRoutines] = useState<RoutineSchedule[]>([]);
   const [logs, setLogs] = useState<ExecutionLog[]>([]);
   const [glpiConfig, setGlpiConfig] = useState<GlpiConfig | null>(null);
+  const [referenceData, setReferenceData] = useState<GlpiReferenceData | null>(null);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Modals & UI States
   const [isRoutineModalOpen, setIsRoutineModalOpen] = useState(false);
   const [editingRoutine, setEditingRoutine] = useState<RoutineSchedule | null>(null);
+  const [isCreateTicketModalOpen, setIsCreateTicketModalOpen] = useState(false);
 
   // Toast Notification state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
@@ -53,22 +67,25 @@ export default function App() {
   // Fetch all applet data from backend
   const fetchData = useCallback(async () => {
     try {
-      const [routinesData, logsData, configData, statsData] = await Promise.all([
+      const [routinesData, logsData, configData, statsData, refData] = await Promise.all([
         api.getRoutines(),
         api.getLogs(),
         api.getGlpiConfig(),
-        api.getStats()
+        api.getStats(),
+        api.getReferenceData().catch(() => null)
       ]);
       setRoutines(routinesData);
       setLogs(logsData);
       setGlpiConfig(configData);
       setStats(statsData);
+      if (refData) setReferenceData(refData);
     } catch (err: any) {
       console.error('Error fetching GLPI scheduler data:', err);
     } finally {
       setLoading(false);
     }
   }, []);
+
 
   useEffect(() => {
     fetchData();
@@ -320,6 +337,15 @@ export default function App() {
               />
             )}
 
+            {currentTab === 'tickets' && (
+              <TicketsView
+                glpiConfig={glpiConfig}
+                referenceData={referenceData}
+                onOpenCreateTicket={() => setIsCreateTicketModalOpen(true)}
+                onRefreshReferenceData={fetchData}
+              />
+            )}
+
             {currentTab === 'glpi' && glpiConfig && (
               <GlpiConfigView
                 config={glpiConfig}
@@ -354,7 +380,25 @@ export default function App() {
         }}
         onSave={handleSaveRoutine}
         initialData={editingRoutine}
+        referenceData={referenceData}
       />
+
+      {/* Real GLPI Ticket Creation Modal */}
+      <CreateTicketModal
+        isOpen={isCreateTicketModalOpen}
+        onClose={() => setIsCreateTicketModalOpen(false)}
+        referenceData={referenceData}
+        onSubmitTicket={async (payload) => {
+          const res = await api.createGlpiTicket(payload);
+          showToast(res.message);
+          fetchData();
+          return res;
+        }}
+        onTicketCreated={() => {
+          fetchData();
+        }}
+      />
+
 
       {/* System Footer */}
       <footer className="border-t border-slate-900 bg-slate-950 py-4 text-center text-xs text-slate-500">
