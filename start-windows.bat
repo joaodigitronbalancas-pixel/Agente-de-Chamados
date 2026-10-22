@@ -24,10 +24,7 @@ timeout /t 3 /nobreak >nul
 
 echo [2/2] Iniciando Agente de Chamados na porta 5522...
 echo.
-echo ================================================================
-echo Acesse o Agente de Chamados em: http://localhost:5522/login
-echo ================================================================
-echo.
+echo =========================================================echo.
 npm run dev
 
 pause
