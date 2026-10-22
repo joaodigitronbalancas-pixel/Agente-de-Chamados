@@ -117,6 +117,7 @@ export interface GlpiConfig {
   sessionTokenMasked?: string | null;
   schedulerRunning: boolean;
   schedulerLastHeartbeat: string | null;
+  timeOffsetHours?: number; // Ajuste manual em horas (-12 a +12) como último recurso
 }
 
 export interface DashboardStats {
@@ -361,12 +362,22 @@ export interface TicketActorItem {
   isGroup?: boolean;
 }
 
+export interface TimeAuditReport {
+  appServerTime: string;      // Relógio do servidor do app (America/Sao_Paulo)
+  glpiCurrentTime: string;    // Relógio oficial lido via /getFullSession
+  sentDate: string;           // Data enviada no payload ao GLPI
+  recordedDate: string;       // Data gravada e confirmada via GET /Ticket/{id}
+  matches: boolean;
+  offsetHoursApplied?: number;
+}
+
 export interface TicketConferenceReport {
   success: boolean;
   ticketId: number;
   ticketUrl: string;
   recordedDate: string;
   durationMs: number;
+  timeAudit: TimeAuditReport;
   steps: {
     step: string;
     status: 'success' | 'warning' | 'error' | 'skipped';
