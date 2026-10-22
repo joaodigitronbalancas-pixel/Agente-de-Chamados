@@ -381,6 +381,10 @@ export default function App() {
         onSave={handleSaveRoutine}
         initialData={editingRoutine}
         referenceData={referenceData}
+        onRefreshReferenceData={async () => {
+          const ref = await api.refreshReferenceData();
+          setReferenceData(ref);
+        }}
       />
 
       {/* Real GLPI Ticket Creation Modal */}

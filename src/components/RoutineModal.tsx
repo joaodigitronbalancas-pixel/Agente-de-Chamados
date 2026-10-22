@@ -1,7 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { RoutineSchedule, RecurrenceType, IT_CATEGORIES, ItCategory, GlpiReferenceData } from '../types';
+import { 
+  RoutineSchedule, 
+  RecurrenceType, 
+  IT_CATEGORIES, 
+  ItCategory, 
+  GlpiReferenceData, 
+  TicketConferenceReport 
+} from '../types';
 import { replaceMacroVariables } from '../utils/scheduler';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
+import { ConferenceReportModal } from './ConferenceReportModal';
+import { api } from '../services/api';
 import { 
   CalendarClock, 
   Sparkles, 
@@ -14,7 +23,14 @@ import {
   X,
   AlertCircle,
   ShieldCheck,
-  Cpu
+  Cpu,
+  RefreshCw,
+  Play,
+  MapPin,
+  Building,
+  CheckCircle2,
+  Users,
+  Settings
 } from 'lucide-react';
 
 interface RoutineModalProps {
@@ -23,6 +39,7 @@ interface RoutineModalProps {
   onSave: (routineData: Partial<RoutineSchedule>) => Promise<void>;
   initialData?: RoutineSchedule | null;
   referenceData?: GlpiReferenceData | null;
+  onRefreshReferenceData?: () => Promise<void>;
 }
 
 export const RoutineModal: React.FC<RoutineModalProps> = ({
@@ -30,8 +47,10 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
   onClose,
   onSave,
   initialData,
-  referenceData
+  referenceData,
+  onRefreshReferenceData
 }) => {
+  // Main form states
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [frequency, setFrequency] = useState<RecurrenceType>('daily');
@@ -40,39 +59,79 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
   const [dayOfMonth, setDayOfMonth] = useState<number>(1);
   const [customIntervalHours, setCustomIntervalHours] = useState<number>(24);
   const [isActive, setIsActive] = useState<boolean>(true);
-  const [type, setType] = useState<1 | 2>(2); // Requisição
+
+  // Classification & Scalar Fields
+  const [type, setType] = useState<1 | 2>(2); // 1 = Incidente, 2 = Requisição
+  const [statusId, setStatusId] = useState<number>(1); // 1 = Novo
+  const [requestTypeId, setRequestTypeId] = useState<number>(6); // 6 = Outro / Agendador
   const [urgency, setUrgency] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [impact, setImpact] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [priority, setPriority] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [categoryId, setCategoryId] = useState<number>(1);
   const [categoryName, setCategoryName] = useState<ItCategory>('TI - Infraestrutura e Servidores');
+  const [entityId, setEntityId] = useState<number>(0);
+  const [locationId, setLocationId] = useState<number | undefined>(undefined);
+  const [locationName, setLocationName] = useState<string>('');
+  const [equipment, setEquipment] = useState<string>('');
+
+  // Actors
+  const [requesterUserId, setRequesterUserId] = useState<number | undefined>(undefined);
+  const [requesterGroupId, setRequesterGroupId] = useState<number | undefined>(undefined);
+  const [assignedUserId, setAssignedUserId] = useState<number | undefined>(undefined);
+  const [assignedGroupId, setAssignedGroupId] = useState<number | undefined>(undefined);
+  const [observerUserId, setObserverUserId] = useState<number | undefined>(undefined);
+  const [observerGroupId, setObserverGroupId] = useState<number | undefined>(undefined);
+
+  // Legacy fallback strings
   const [requester, setRequester] = useState('joao.leopoldino@digitronbalancas.com.br');
   const [assignee, setAssignee] = useState('Equipe de TI');
   const [technicalGroup, setTechnicalGroup] = useState('Equipe de TI');
+
+  // Advanced / Extras
+  const [extraFields, setExtraFields] = useState<string>('');
   const [tagsInput, setTagsInput] = useState('TI, Servidores, Infraestrutura');
+
+  // UI States
   const [previewTab, setPreviewTab] = useState<'editor' | 'preview'>('editor');
   const [loading, setLoading] = useState(false);
+  const [testLoading, setTestLoading] = useState(false);
+  const [refreshLoading, setRefreshLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
+  const [conferenceReport, setConferenceReport] = useState<TicketConferenceReport | null>(null);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   useEffect(() => {
     if (initialData) {
-      setTitle(initialData.title);
-      setContent(initialData.content);
-      setFrequency(initialData.frequency);
+      setTitle(initialData.title || '');
+      setContent(initialData.content || '');
+      setFrequency(initialData.frequency || 'daily');
       setTime(initialData.time || '07:00');
       setDaysOfWeek(initialData.daysOfWeek || [1]);
       setDayOfMonth(initialData.dayOfMonth || 1);
       setCustomIntervalHours(initialData.customIntervalHours || 24);
-      setIsActive(initialData.isActive);
-      setType(initialData.type);
-      setUrgency(initialData.urgency);
-      setImpact(initialData.impact);
-      setPriority(initialData.priority);
+      setIsActive(initialData.isActive !== false);
+      setType(initialData.type || 2);
+      setStatusId(initialData.statusId || 1);
+      setRequestTypeId(initialData.requestTypeId || 6);
+      setUrgency(initialData.urgency || 3);
+      setImpact(initialData.impact || 3);
+      setPriority(initialData.priority || 3);
+      setCategoryId(initialData.categoryId || 1);
       setCategoryName(initialData.categoryName || 'TI - Infraestrutura e Servidores');
+      setEntityId(initialData.entityId !== undefined ? initialData.entityId : 0);
+      setLocationId(initialData.locationId);
+      setLocationName(initialData.locationName || '');
+      setEquipment(initialData.equipment || '');
+      setRequesterUserId(initialData.requesterUserId);
+      setRequesterGroupId(initialData.requesterGroupId);
+      setAssignedUserId(initialData.assignedUserId);
+      setAssignedGroupId(initialData.assignedGroupId);
+      setObserverUserId(initialData.observerUserId);
+      setObserverGroupId(initialData.observerGroupId);
       setRequester(initialData.requester || 'joao.leopoldino@digitronbalancas.com.br');
       setAssignee(initialData.assignee || 'Equipe de TI');
       setTechnicalGroup(initialData.technicalGroup || 'Equipe de TI');
+      setExtraFields(initialData.extraFields || '');
       setTagsInput((initialData.tags || []).join(', '));
     } else {
       setTitle('[TI] Verificação Diária de Backups e Integridade do ERP Factory OS ({data})');
@@ -84,13 +143,27 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
       setCustomIntervalHours(24);
       setIsActive(true);
       setType(2);
+      setStatusId(1);
+      setRequestTypeId(6);
       setUrgency(3);
       setImpact(3);
       setPriority(3);
+      setCategoryId(1);
       setCategoryName('TI - Backups e Armazenamento');
+      setEntityId(0);
+      setLocationId(undefined);
+      setLocationName('');
+      setEquipment('Storage NAS Digi-Tron');
+      setRequesterUserId(2);
+      setRequesterGroupId(undefined);
+      setAssignedUserId(undefined);
+      setAssignedGroupId(1);
+      setObserverUserId(undefined);
+      setObserverGroupId(undefined);
       setRequester('joao.leopoldino@digitronbalancas.com.br');
       setAssignee('Equipe de TI');
       setTechnicalGroup('Equipe de TI');
+      setExtraFields('');
       setTagsInput('Backup, ERP Factory OS, Storage NAS');
     }
   }, [initialData, isOpen]);
@@ -115,6 +188,64 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
     }
   };
 
+  const handleRefresh = async () => {
+    setRefreshLoading(true);
+    setError(null);
+    try {
+      if (onRefreshReferenceData) {
+        await onRefreshReferenceData();
+      } else {
+        await api.refreshReferenceData();
+      }
+    } catch (err: any) {
+      setError(`Erro ao atualizar listas do GLPI: ${err.message}`);
+    } finally {
+      setRefreshLoading(false);
+    }
+  };
+
+  const handleTestTicket = async () => {
+    setError(null);
+    if (!title.trim() || !content.trim()) {
+      setError('Preencha o título e o conteúdo antes de testar a criação no GLPI.');
+      return;
+    }
+
+    setTestLoading(true);
+    try {
+      const report = await api.testTicket({
+        title,
+        description: content,
+        content,
+        categoryId,
+        categoryName,
+        entityId,
+        type,
+        statusId,
+        urgency,
+        impact,
+        priority,
+        locationId,
+        requestTypeId,
+        requesterUserId,
+        requesterGroupId,
+        assignedUserId,
+        assignedGroupId,
+        observerUserId,
+        observerGroupId,
+        extraFields,
+        equipment
+      });
+
+      setConferenceReport(report);
+      setShowReportModal(true);
+    } catch (err: any) {
+      setError(`Falha no teste de criação de chamado: ${err.message}`);
+    } finally {
+      setTestLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -124,7 +255,7 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
       return;
     }
 
-    // Front validation: scope restriction check
+    // Anti-slop / Scope restriction
     const forbidden = ['balança', 'balanca', 'calibração', 'calibracao', 'pesos padrão', 'célula de carga', 'rodoviária'];
     const combined = `${title} ${content}`.toLowerCase();
     for (const term of forbidden) {
@@ -152,15 +283,27 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
         customIntervalHours: Number(customIntervalHours),
         isActive,
         type,
+        statusId,
+        requestTypeId,
         urgency,
         impact,
         priority,
         categoryId,
         categoryName,
+        entityId,
+        locationId,
+        locationName,
+        equipment,
+        requesterUserId,
+        requesterGroupId,
+        assignedUserId,
+        assignedGroupId,
+        observerUserId,
+        observerGroupId,
         requester,
         assignee,
         technicalGroup,
-        entityId: 0,
+        extraFields,
         tags
       });
       onClose();
@@ -191,520 +334,672 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
     { label: '{empresa}', desc: 'Digi-Tron Balanças' }
   ];
 
+  // Options prepared for SearchableSelect
+  const entityOptions: SelectOption[] = (referenceData?.entities || [
+    { id: 0, name: 'Entidade Raiz', completeName: 'Entidade Raiz' }
+  ]).map(e => ({
+    value: e.id,
+    label: e.completeName || e.completename || e.name,
+    badge: `ID: ${e.id}`
+  }));
+
+  // Categories filtered or badged by type
+  const categoryOptions: SelectOption[] = (referenceData?.categories || []).map(c => {
+    const isApplicable = (type === 1 && (c.isIncident ?? c.is_incident !== 0)) || (type === 2 && (c.isRequest ?? c.is_request !== 0));
+    return {
+      value: c.id,
+      label: c.completeName || c.completename || c.name,
+      subLabel: isApplicable ? (type === 1 ? 'Aplicável para Incidentes' : 'Aplicável para Requisições') : 'Geral',
+      badge: `ID: ${c.id}`
+    };
+  });
+
+  const locationOptions: SelectOption[] = [
+    { value: '', label: 'Nenhuma / Padrão da Entidade' },
+    ...(referenceData?.locations || []).map(l => ({
+      value: l.id,
+      label: l.completeName || l.completename || l.name,
+      badge: `ID: ${l.id}`
+    }))
+  ];
+
+  const requestTypeOptions: SelectOption[] = (referenceData?.requestTypes || [
+    { id: 1, name: 'Helpdesk' },
+    { id: 2, name: 'E-mail' },
+    { id: 3, name: 'Telefone' },
+    { id: 4, name: 'Direta' },
+    { id: 5, name: 'Escrita' },
+    { id: 6, name: 'Outro (Agendador Automático)' }
+  ]).map(rt => ({
+    value: rt.id,
+    label: rt.name,
+    badge: `ID: ${rt.id}`
+  }));
+
+  const userOptions: SelectOption[] = [
+    { value: '', label: 'Nenhum / Não atribuir' },
+    ...(referenceData?.users || []).map(u => ({
+      value: u.id,
+      label: `${u.firstname ? `${u.firstname} ${u.realname}` : u.name} (${u.name}) - #${u.id}`,
+      subLabel: u.email || `${u.name}@digitronbalancas.com.br`,
+      badge: `ID: ${u.id}`
+    }))
+  ];
+
+  const groupOptions: SelectOption[] = [
+    { value: '', label: 'Nenhum / Não atribuir' },
+    ...(referenceData?.groups || []).map(g => ({
+      value: g.id,
+      label: `${g.completeName || g.completename || g.name} - #${g.id}`,
+      badge: `ID: ${g.id}`
+    }))
+  ];
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-3xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
-        
-        {/* Modal Header */}
-        <div className="p-5 sm:p-6 border-b border-slate-800 bg-slate-900/95 flex items-center justify-between shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
-              <Cpu className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-base sm:text-lg font-bold text-white">
-                {initialData ? 'Editar Rotina de TI' : 'Nova Rotina de TI Programada'}
-              </h3>
-              <p className="text-xs text-slate-400">
-                Lançamento autônomo restrito ao setor de Tecnologia da Informação
-              </p>
-            </div>
-          </div>
-
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Modal Body */}
-        <div className="p-5 sm:p-6 overflow-y-auto space-y-6">
+    <>
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/80 backdrop-blur-sm overflow-y-auto">
+        <div className="bg-slate-900 border border-slate-700/80 rounded-3xl w-full max-w-4xl shadow-2xl overflow-hidden my-auto max-h-[92vh] flex flex-col">
           
-          {error && (
-            <div className="p-3.5 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>{error}</span>
-            </div>
-          )}
-
-          {/* Toggle between Editor and Live Preview */}
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <div className="flex items-center gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
-              <button
-                type="button"
-                onClick={() => setPreviewTab('editor')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
-                  previewTab === 'editor'
-                    ? 'bg-cyan-500 text-slate-950'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <FileText className="w-3.5 h-3.5" />
-                Configurar Rotina
-              </button>
-              <button
-                type="button"
-                onClick={() => setPreviewTab('preview')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
-                  previewTab === 'preview'
-                    ? 'bg-cyan-500 text-slate-950'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Eye className="w-3.5 h-3.5" />
-                Prévia com Variáveis Renderizadas
-              </button>
+          {/* Modal Header */}
+          <div className="p-5 sm:p-6 border-b border-slate-800 bg-slate-900/95 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-cyan-500/20 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+                <Cpu className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base sm:text-lg font-bold text-white">
+                  {initialData ? 'Editar Rotina de TI Recorrente' : 'Nova Rotina de TI Programada'}
+                </h3>
+                <p className="text-xs text-slate-400">
+                  Criação no GLPI via API REST com IDs numéricos reais e validação em etapas
+                </p>
+              </div>
             </div>
 
-            <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-300">
-              <input
-                type="checkbox"
-                checked={isActive}
-                onChange={(e) => setIsActive(e.target.checked)}
-                className="w-4 h-4 rounded text-cyan-500 focus:ring-cyan-500 bg-slate-950 border-slate-700 cursor-pointer"
-              />
-              <span>Rotina Ativa (Lançamentos Habilitados)</span>
-            </label>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRefresh}
+                disabled={refreshLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-semibold border border-slate-700 transition-colors cursor-pointer"
+                title="Atualizar listas de Usuários, Categorias, Grupos e Localizações do GLPI"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${refreshLoading ? 'animate-spin text-cyan-400' : ''}`} />
+                <span className="hidden sm:inline">Atualizar Listas GLPI</span>
+              </button>
+
+              <button
+                onClick={onClose}
+                className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
-          {previewTab === 'preview' ? (
-            /* Live Render Preview */
-            <div className="space-y-4 p-5 rounded-2xl bg-slate-950 border border-cyan-800/40">
-              <div className="border-b border-slate-800 pb-3">
-                <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider">
-                  Título que será enviado ao GLPI:
-                </span>
-                <h2 className="text-base font-bold text-white mt-1">
-                  {replaceMacroVariables(title)}
-                </h2>
+          {/* Modal Body */}
+          <div className="p-5 sm:p-6 overflow-y-auto space-y-6">
+            
+            {error && (
+              <div className="p-3.5 rounded-xl bg-rose-950/60 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {/* Toggle between Editor and Live Preview */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setPreviewTab('editor')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    previewTab === 'editor'
+                      ? 'bg-cyan-500 text-slate-950 font-bold'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  Editor da Rotina
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewTab('preview')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                    previewTab === 'preview'
+                      ? 'bg-cyan-500 text-slate-950 font-bold'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  <Eye className="w-3.5 h-3.5" />
+                  Pré-visualização Dinâmica
+                </button>
               </div>
 
-              <div>
-                <span className="text-[10px] uppercase font-bold text-cyan-400 tracking-wider">
-                  Descrição & Checklist de TI:
-                </span>
-                <div className="mt-2 p-4 rounded-xl bg-slate-900 border border-slate-800 text-xs text-slate-200 whitespace-pre-wrap font-mono leading-relaxed">
-                  {replaceMacroVariables(content)}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-3 border-t border-slate-800 text-xs">
-                <div>
-                  <span className="text-slate-500 block text-[10px]">Tipo</span>
-                  <span className="font-semibold text-white">{type === 1 ? 'Incidente' : 'Requisição'}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px]">Prioridade</span>
-                  <span className="font-semibold text-amber-400">{priority} de 5</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px]">Categoria de TI</span>
-                  <span className="font-semibold text-cyan-300 truncate block">{categoryName}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block text-[10px]">Grupo Técnico</span>
-                  <span className="font-semibold text-slate-300">{technicalGroup}</span>
-                </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-slate-400 flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isActive}
+                    onChange={(e) => setIsActive(e.target.checked)}
+                    className="w-4 h-4 rounded border-slate-700 text-cyan-500 focus:ring-0 bg-slate-900 cursor-pointer"
+                  />
+                  <span>Rotina Ativa (Auto-Disparo)</span>
+                </label>
               </div>
             </div>
-          ) : (
-            <form id="routine-form" onSubmit={handleSubmit} className="space-y-5">
-              
-              {/* Routine Title */}
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  Título do Chamado de TI no GLPI
-                </label>
-                <input
-                  type="text"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  required
-                  placeholder="Ex: [TI] Verificação Diária de Backups e Integridade ({data})"
-                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700/80 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
-                />
 
-                <div className="flex flex-wrap items-center gap-1.5 mt-2">
-                  <span className="text-[10px] text-slate-500 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-cyan-400" /> Inserir variável:
-                  </span>
-                  {macros.slice(0, 4).map((m) => (
-                    <button
-                      key={m.label}
-                      type="button"
-                      onClick={() => insertMacro(m.label, 'title')}
-                      className="px-2 py-0.5 rounded text-[10px] font-mono font-medium bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 cursor-pointer"
-                    >
-                      {m.label}
-                    </button>
-                  ))}
+            {previewTab === 'preview' ? (
+              <div className="space-y-4 bg-slate-950/60 border border-slate-800/80 rounded-2xl p-5">
+                <div className="flex items-center gap-2 text-xs font-bold text-cyan-400">
+                  <Sparkles className="w-4 h-4" />
+                  <span>Chamado Resolvido como Chegará ao GLPI:</span>
                 </div>
-              </div>
-
-              {/* Recurrence Settings Section */}
-              <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-4">
-                <div className="flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-cyan-400" />
-                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                    Programação de Recorrência
-                  </h4>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                  {[
-                    { id: 'daily', label: 'Diário' },
-                    { id: 'weekly', label: 'Semanal' },
-                    { id: 'biweekly', label: 'Quinzenal' },
-                    { id: 'monthly', label: 'Mensal' },
-                    { id: 'custom_interval', label: 'Intervalo (h)' }
-                  ].map((freq) => (
-                    <button
-                      key={freq.id}
-                      type="button"
-                      onClick={() => setFrequency(freq.id as RecurrenceType)}
-                      className={`py-2 px-3 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
-                        frequency === freq.id
-                          ? 'bg-cyan-500 text-slate-950 border-cyan-400 shadow-sm'
-                          : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
-                      }`}
-                    >
-                      {freq.label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="pt-2 flex flex-wrap items-center gap-4">
+                
+                <div className="border border-slate-800 bg-slate-900/90 rounded-xl p-4 space-y-3 font-sans">
                   <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Horário do Disparo (HH:MM)
+                    <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider block">Título</span>
+                    <h4 className="text-sm font-bold text-white mt-0.5">
+                      {replaceMacroVariables(title)}
+                    </h4>
+                  </div>
+                  
+                  <div>
+                    <span className="text-[10px] font-mono text-slate-500 uppercase tracking-wider block">Descrição Formatada</span>
+                    <div className="text-xs text-slate-300 font-mono whitespace-pre-wrap bg-slate-950/80 p-3 rounded-lg border border-slate-800 mt-1 leading-relaxed">
+                      {replaceMacroVariables(content)}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-800 text-[11px]">
+                    <div>
+                      <span className="text-slate-500 block">Tipo:</span>
+                      <span className="text-white font-medium">{type === 1 ? 'Incidente' : 'Requisição'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">Status:</span>
+                      <span className="text-white font-medium">Novo (ID {statusId})</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">Origem:</span>
+                      <span className="text-white font-medium">ID {requestTypeId}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-500 block">Entidade / Fuso:</span>
+                      <span className="text-cyan-400 font-medium">ID {entityId} (SP UTC-3)</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleSubmit} className="space-y-6">
+                
+                {/* 1. Routine Title */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-300">
+                      Título do Chamado no GLPI *
                     </label>
-                    <input
-                      type="time"
-                      value={time}
-                      onChange={(e) => setTime(e.target.value)}
-                      className="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono"
-                    />
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] text-slate-500">Macros:</span>
+                      {macros.slice(0, 4).map((m) => (
+                        <button
+                          key={m.label}
+                          type="button"
+                          onClick={() => insertMacro(m.label, 'title')}
+                          className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-cyan-300 hover:bg-slate-700 cursor-pointer"
+                          title={m.desc}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    required
+                    placeholder="Ex: [TI] Backup Diário do ERP Factory OS ({data})"
+                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                {/* 2. Recurrence Configuration */}
+                <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <CalendarClock className="w-4 h-4 text-cyan-400" />
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Agendamento & Frequência de Execução
+                    </h4>
                   </div>
 
-                  {frequency === 'weekly' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                        Dias da Semana
+                        Periodicidade
                       </label>
-                      <div className="flex items-center gap-1">
-                        {weekDayLabels.map((d) => {
-                          const isSelected = daysOfWeek.includes(d.id);
-                          return (
-                            <button
-                              key={d.id}
-                              type="button"
-                              onClick={() => toggleDayOfWeek(d.id)}
-                              className={`w-7 h-7 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
-                                isSelected
-                                  ? 'bg-cyan-500 text-slate-950 border-cyan-400'
-                                  : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
-                              }`}
-                            >
-                              {d.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {frequency === 'monthly' && (
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                        Dia do Mês (1 - 31)
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={31}
-                        value={dayOfMonth}
-                        onChange={(e) => setDayOfMonth(parseInt(e.target.value) || 1)}
-                        className="w-20 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono"
-                      />
-                    </div>
-                  )}
-
-                  {frequency === 'custom_interval' && (
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                        A cada quantas horas
-                      </label>
-                      <input
-                        type="number"
-                        min={1}
-                        max={168}
-                        value={customIntervalHours}
-                        onChange={(e) => setCustomIntervalHours(parseInt(e.target.value) || 12)}
-                        className="w-24 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono"
-                      />
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Routine Content / Checklist */}
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="block text-xs font-semibold text-slate-300">
-                    Conteúdo do Chamado & Checklist Técnico de TI
-                  </label>
-                  <div className="flex flex-wrap items-center gap-1">
-                    {macros.map((m) => (
-                      <button
-                        key={m.label}
-                        type="button"
-                        onClick={() => insertMacro(m.label, 'content')}
-                        className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-cyan-300 hover:bg-slate-700 cursor-pointer"
-                        title={m.desc}
+                      <select
+                        value={frequency}
+                        onChange={(e) => setFrequency(e.target.value as RecurrenceType)}
+                        className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white focus:outline-none focus:border-cyan-500"
                       >
-                        {m.label}
-                      </button>
-                    ))}
+                        <option value="daily">Diário</option>
+                        <option value="weekly">Semanal</option>
+                        <option value="monthly">Mensal</option>
+                        <option value="custom_interval">Intervalo de Horas</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Horário do Disparo (HH:MM - SP)
+                      </label>
+                      <input
+                        type="time"
+                        value={time}
+                        onChange={(e) => setTime(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono"
+                      />
+                    </div>
+
+                    {frequency === 'weekly' && (
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                          Dias da Semana
+                        </label>
+                        <div className="flex items-center gap-1">
+                          {weekDayLabels.map((d) => {
+                            const isSelected = daysOfWeek.includes(d.id);
+                            return (
+                              <button
+                                key={d.id}
+                                type="button"
+                                onClick={() => toggleDayOfWeek(d.id)}
+                                className={`w-7 h-7 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer ${
+                                  isSelected
+                                    ? 'bg-cyan-500 text-slate-950 border-cyan-400'
+                                    : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-white'
+                                }`}
+                              >
+                                {d.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {frequency === 'monthly' && (
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                          Dia do Mês (1 - 31)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={31}
+                          value={dayOfMonth}
+                          onChange={(e) => setDayOfMonth(parseInt(e.target.value) || 1)}
+                          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono"
+                        />
+                      </div>
+                    )}
+
+                    {frequency === 'custom_interval' && (
+                      <div>
+                        <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                          A cada quantas horas
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={168}
+                          value={customIntervalHours}
+                          onChange={(e) => setCustomIntervalHours(parseInt(e.target.value) || 12)}
+                          className="w-full px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
-                <textarea
-                  rows={6}
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  required
-                  placeholder="Escreva a descrição e procedimentos técnicos do chamado de TI..."
-                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700/80 rounded-xl text-xs text-slate-200 font-mono placeholder-slate-500 focus:outline-none focus:border-cyan-500 leading-relaxed"
-                />
-              </div>
 
-              {/* GLPI Fields Configuration - Restricted to IT Catalog */}
-              <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-4">
-                <div className="flex items-center gap-2">
-                  <Sliders className="w-4 h-4 text-cyan-400" />
-                  <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                    Parâmetros e Catálogo de TI (GLPI)
-                  </h4>
+                {/* 3. Routine Content / Checklist */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-semibold text-slate-300">
+                      Conteúdo do Chamado & Checklist Técnico de TI *
+                    </label>
+                    <div className="flex flex-wrap items-center gap-1">
+                      {macros.map((m) => (
+                        <button
+                          key={m.label}
+                          type="button"
+                          onClick={() => insertMacro(m.label, 'content')}
+                          className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-cyan-300 hover:bg-slate-700 cursor-pointer"
+                          title={m.desc}
+                        >
+                          {m.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <textarea
+                    rows={5}
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    required
+                    placeholder="Escreva a descrição e procedimentos técnicos do chamado de TI..."
+                    className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-700/80 rounded-xl text-xs text-slate-200 font-mono placeholder-slate-500 focus:outline-none focus:border-cyan-500 leading-relaxed"
+                  />
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {referenceData && referenceData.categories.length > 0 ? (
+                {/* 4. Classification & Location (GLPI Entities, Categories, Locations) */}
+                <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-cyan-400" />
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                        Classificação, Entidade & Localização no GLPI
+                      </h4>
+                    </div>
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      IDs numéricos reais validados
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                     <SearchableSelect
-                      label="Categoria de TI no GLPI"
-                      options={referenceData.categories.map(c => ({
-                        value: c.id,
-                        label: c.completeName || c.name,
-                        badge: `ID: ${c.id}`
-                      }))}
+                      label="Entidade GLPI (/Entity)"
+                      options={entityOptions}
+                      value={entityId}
+                      onChange={(val) => setEntityId(Number(val))}
+                    />
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Tipo de Chamado
+                      </label>
+                      <select
+                        value={type}
+                        onChange={(e) => setType(parseInt(e.target.value) as 1 | 2)}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      >
+                        <option value={2}>2 - Requisição (Rotina Preventiva TI)</option>
+                        <option value={1}>1 - Incidente (Falha / Corretiva)</option>
+                      </select>
+                    </div>
+
+                    <SearchableSelect
+                      label="Categoria ITIL (/ITILCategory)"
+                      options={categoryOptions}
                       value={categoryId}
                       onChange={(val, opt) => {
                         setCategoryId(Number(val));
                         if (opt) setCategoryName(opt.label as any);
                       }}
                     />
-                  ) : (
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                        Categoria Exclusiva de TI
+                        Status do Chamado
                       </label>
                       <select
-                        value={categoryName}
-                        onChange={(e) => setCategoryName(e.target.value as ItCategory)}
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-cyan-300 font-semibold focus:outline-none focus:border-cyan-500"
+                        value={statusId}
+                        onChange={(e) => setStatusId(parseInt(e.target.value))}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
                       >
-                        {IT_CATEGORIES.map((cat) => (
-                          <option key={cat} value={cat}>
-                            {cat}
-                          </option>
-                        ))}
+                        <option value={1}>1 - Novo</option>
+                        <option value={2}>2 - Em atendimento (atribuído)</option>
+                        <option value={3}>3 - Planejado</option>
+                        <option value={4}>4 - Pendente</option>
+                        <option value={5}>5 - Solucionado</option>
+                        <option value={6}>6 - Fechado</option>
                       </select>
                     </div>
-                  )}
 
-                  {referenceData && referenceData.groups.length > 0 ? (
                     <SearchableSelect
-                      label="Grupo Técnico Responsável"
-                      options={referenceData.groups.map(g => ({
-                        value: g.name,
-                        label: g.name,
-                        subLabel: g.completeName,
-                        badge: `ID: ${g.id}`
-                      }))}
-                      value={technicalGroup}
-                      onChange={(val) => setTechnicalGroup(String(val))}
+                      label="Origem da Requisição (/RequestType)"
+                      options={requestTypeOptions}
+                      value={requestTypeId}
+                      onChange={(val) => setRequestTypeId(Number(val))}
                     />
-                  ) : (
+
+                    <SearchableSelect
+                      label="Localização Física (/Location)"
+                      options={locationOptions}
+                      value={locationId ?? ''}
+                      onChange={(val, opt) => {
+                        setLocationId(val ? Number(val) : undefined);
+                        if (opt) setLocationName(opt.label);
+                      }}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div>
                       <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                        Grupo Técnico no GLPI
+                        Urgência
                       </label>
-                      <input
-                        type="text"
-                        value={technicalGroup}
-                        onChange={(e) => setTechnicalGroup(e.target.value)}
-                        placeholder="Equipe de TI"
+                      <select
+                        value={urgency}
+                        onChange={(e) => setUrgency(parseInt(e.target.value) as any)}
                         className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
-                      />
+                      >
+                        <option value={1}>1 - Muito Baixa</option>
+                        <option value={2}>2 - Baixa</option>
+                        <option value={3}>3 - Média</option>
+                        <option value={4}>4 - Alta</option>
+                        <option value={5}>5 - Muito Alta</option>
+                      </select>
                     </div>
-                  )}
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Tipo de Chamado
-                    </label>
-                    <select
-                      value={type}
-                      onChange={(e) => setType(parseInt(e.target.value) as 1 | 2)}
-                      className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
-                    >
-                      <option value={2}>Requisição (Rotina Preventiva TI)</option>
-                      <option value={1}>Incidente (Falha / Corretiva)</option>
-                    </select>
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Impacto
+                      </label>
+                      <select
+                        value={impact}
+                        onChange={(e) => setImpact(parseInt(e.target.value) as any)}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      >
+                        <option value={1}>1 - Muito Baixo</option>
+                        <option value={2}>2 - Baixo</option>
+                        <option value={3}>3 - Médio</option>
+                        <option value={4}>4 - Alto</option>
+                        <option value={5}>5 - Muito Alto</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                        Prioridade
+                      </label>
+                      <select
+                        value={priority}
+                        onChange={(e) => setPriority(parseInt(e.target.value) as any)}
+                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
+                      >
+                        <option value={1}>1 - Muito Baixa</option>
+                        <option value={2}>2 - Baixa</option>
+                        <option value={3}>3 - Média</option>
+                        <option value={4}>4 - Alta</option>
+                        <option value={5}>5 - Muito Alta</option>
+                      </select>
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Urgência
+                      Equipamento / Ativo de TI
                     </label>
-                    <select
-                      value={urgency}
-                      onChange={(e) => setUrgency(parseInt(e.target.value) as any)}
+                    <input
+                      type="text"
+                      value={equipment}
+                      onChange={(e) => setEquipment(e.target.value)}
+                      placeholder="Ex: Servidor SRV-PROD-01 / Storage NAS / Roteador Core"
                       className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
-                    >
-                      <option value={1}>1 - Muito Baixa</option>
-                      <option value={2}>2 - Baixa</option>
-                      <option value={3}>3 - Média</option>
-                      <option value={4}>4 - Alta</option>
-                      <option value={5}>5 - Muito Alta</option>
-                    </select>
+                    />
+                  </div>
+                </div>
+
+                {/* 5. Actors (Ticket_User / Group_Ticket Sync) */}
+                <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Users className="w-4 h-4 text-violet-400" />
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                        Atores do Chamado (Requerente, Atribuído & Observador)
+                      </h4>
+                    </div>
+                    <span className="text-[10px] text-emerald-400 font-mono">
+                      Garante remoção automática do dono do token
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <SearchableSelect
+                      label="Requerente Usuário (/User - Tipo 1)"
+                      options={userOptions}
+                      value={requesterUserId ?? ''}
+                      onChange={(val) => setRequesterUserId(val ? Number(val) : undefined)}
+                    />
+
+                    <SearchableSelect
+                      label="Requerente Grupo (/Group - Tipo 1)"
+                      options={groupOptions}
+                      value={requesterGroupId ?? ''}
+                      onChange={(val) => setRequesterGroupId(val ? Number(val) : undefined)}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <SearchableSelect
+                      label="Técnico Atribuído (/User - Tipo 2)"
+                      options={userOptions}
+                      value={assignedUserId ?? ''}
+                      onChange={(val) => setAssignedUserId(val ? Number(val) : undefined)}
+                    />
+
+                    <SearchableSelect
+                      label="Grupo Atribuído (/Group - Tipo 2)"
+                      options={groupOptions}
+                      value={assignedGroupId ?? ''}
+                      onChange={(val) => setAssignedGroupId(val ? Number(val) : undefined)}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <SearchableSelect
+                      label="Observador Usuário (/User - Tipo 3)"
+                      options={userOptions}
+                      value={observerUserId ?? ''}
+                      onChange={(val) => setObserverUserId(val ? Number(val) : undefined)}
+                    />
+
+                    <SearchableSelect
+                      label="Observador Grupo (/Group - Tipo 3)"
+                      options={groupOptions}
+                      value={observerGroupId ?? ''}
+                      onChange={(val) => setObserverGroupId(val ? Number(val) : undefined)}
+                    />
+                  </div>
+                </div>
+
+                {/* 6. Extra Fields & Tags */}
+                <div className="p-4 rounded-2xl bg-slate-950/70 border border-slate-800/80 space-y-4">
+                  <div className="flex items-center gap-2">
+                    <Settings className="w-4 h-4 text-cyan-400" />
+                    <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                      Campos Extras & Tags de TI
+                    </h4>
                   </div>
 
                   <div>
                     <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                      Prioridade
+                      Campos Extras do GLPI (formato chave=valor, um por linha)
                     </label>
-                    <select
-                      value={priority}
-                      onChange={(e) => setPriority(parseInt(e.target.value) as any)}
+                    <textarea
+                      rows={2}
+                      value={extraFields}
+                      onChange={(e) => setExtraFields(e.target.value)}
+                      placeholder="time_to_resolve=2026-12-31 18:00:00&#10;sla_id=2"
+                      className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white font-mono placeholder-slate-600"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                      Tags de Identificação (separadas por vírgula)
+                    </label>
+                    <input
+                      type="text"
+                      value={tagsInput}
+                      onChange={(e) => setTagsInput(e.target.value)}
+                      placeholder="Backup, Servidores, ERP Factory OS"
                       className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
-                    >
-                      <option value={1}>1 - Muito Baixa</option>
-                      <option value={2}>2 - Baixa</option>
-                      <option value={3}>3 - Média</option>
-                      <option value={4}>4 - Alta</option>
-                      <option value={5}>5 - Muito Alta</option>
-                    </select>
+                    />
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {referenceData && referenceData.users.length > 0 ? (
-                    <SearchableSelect
-                      label="Requerente Oficial no GLPI"
-                      options={referenceData.users.map(u => ({
-                        value: u.email || u.name,
-                        label: `${u.firstname ? `${u.firstname} ${u.realname}` : u.name} (#${u.id})`,
-                        subLabel: u.email || `${u.name}@digitronbalancas.com.br`,
-                        badge: u.name
-                      }))}
-                      value={requester}
-                      onChange={(val) => setRequester(String(val))}
-                    />
-                  ) : (
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                        Requerente de TI
-                      </label>
-                      <input
-                        type="text"
-                        value={requester}
-                        onChange={(e) => setRequester(e.target.value)}
-                        placeholder="joao.leopoldino@digitronbalancas.com.br"
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
-                      />
-                    </div>
-                  )}
-
-                  {referenceData && referenceData.technicians.length > 0 ? (
-                    <SearchableSelect
-                      label="Técnico Atribuído (GLPI)"
-                      options={[
-                        { value: 'Equipe de TI', label: 'Equipe de TI (Pool)' },
-                        ...referenceData.technicians.map(t => ({
-                          value: t.firstname ? `${t.firstname} ${t.realname}` : t.name,
-                          label: `${t.firstname ? `${t.firstname} ${t.realname}` : t.name} (Técnico TI)`,
-                          subLabel: t.email,
-                          badge: `ID: ${t.id}`
-                        }))
-                      ]}
-                      value={assignee}
-                      onChange={(val) => setAssignee(String(val))}
-                    />
-                  ) : (
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                        Técnico Atribuído
-                      </label>
-                      <input
-                        type="text"
-                        value={assignee}
-                        onChange={(e) => setAssignee(e.target.value)}
-                        placeholder="Equipe de TI"
-                        className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
-                      />
-                    </div>
-                  )}
-                </div>
-
-
-                <div>
-                  <label className="block text-[11px] font-medium text-slate-400 mb-1">
-                    Tags de TI (separadas por vírgula)
-                  </label>
-                  <input
-                    type="text"
-                    value={tagsInput}
-                    onChange={(e) => setTagsInput(e.target.value)}
-                    placeholder="Backup, Servidores, ERP Factory OS"
-                    className="w-full px-3 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white"
-                  />
-                </div>
-              </div>
-
-            </form>
-          )}
-
-        </div>
-
-        {/* Modal Footer */}
-        <div className="p-5 sm:p-6 border-t border-slate-800 bg-slate-900/95 flex items-center justify-between shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-          >
-            Cancelar
-          </button>
-
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={loading}
-            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-slate-950 text-xs font-bold shadow-lg shadow-cyan-500/20 transition-all disabled:opacity-50 cursor-pointer"
-          >
-            {loading ? (
-              <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <Save className="w-4 h-4" />
+              </form>
             )}
-            <span>{initialData ? 'Salvar Alterações na Rotina' : 'Criar Rotina de TI'}</span>
-          </button>
-        </div>
 
+          </div>
+
+          {/* Modal Footer */}
+          <div className="p-5 sm:p-6 border-t border-slate-800 bg-slate-900/95 flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTestTicket}
+                disabled={testLoading}
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-violet-600/20 hover:bg-violet-600/30 border border-violet-500/40 text-violet-300 hover:text-white text-xs font-bold transition-all disabled:opacity-50 cursor-pointer"
+                title="Cria um chamado de teste no GLPI e abre o relatório de conferência"
+              >
+                {testLoading ? (
+                  <div className="w-3.5 h-3.5 border-2 border-violet-300 border-t-transparent rounded-full animate-spin" />
+                ) : (
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                )}
+                <span>Testar Chamado</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={loading}
+              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 hover:from-cyan-400 hover:to-teal-400 text-slate-950 text-xs font-bold shadow-lg shadow-cyan-500/20 transition-all disabled:opacity-50 cursor-pointer"
+            >
+              {loading ? (
+                <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <Save className="w-4 h-4" />
+              )}
+              <span>{initialData ? 'Salvar Alterações na Rotina' : 'Criar Rotina de TI'}</span>
+            </button>
+          </div>
+
+        </div>
       </div>
-    </div>
+
+      {/* Conference Report Modal */}
+      <ConferenceReportModal
+        isOpen={showReportModal}
+        onClose={() => setShowReportModal(false)}
+        report={conferenceReport}
+      />
+    </>
   );
 };

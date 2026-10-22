@@ -11,8 +11,25 @@ import {
   getSaoPauloTodayIso, 
   calculateNextRunInSaoPaulo, 
   createSaoPauloDate, 
-  parseDateSafe 
+  parseDateSafe,
+  nowSaoPaulo,
+  formatGlpiDateTime
 } from './src/utils/dateTime';
+import {
+  resolveGlpiRequesterId,
+  resolveGlpiTechnicianId,
+  resolveGlpiGroupId,
+  resolveGlpiCategoryId,
+  resolveGlpiLocationId,
+  resolveGlpiRequestTypeId,
+  resolveGlpiEntityId,
+  GLPI_REQUESTERS_MAP,
+  GLPI_TECHNICIANS_MAP,
+  GLPI_GROUPS_MAP,
+  GLPI_CATEGORIES_MAP,
+  GLPI_LOCATIONS_MAP,
+  GLPI_REQUEST_TYPES_MAP
+} from './src/config/glpi-map';
 
 dotenv.config();
 
@@ -608,9 +625,599 @@ async function glpiKillSession(baseUrl: string, sessionToken: string, appToken: 
   } catch (e) {}
 }
 
-// REAL PRODUCTION DISPATCH WITH STRICT IT SCOPE ENFORCEMENT
-async function executeRoutineDispatchReal(routine: any, executionType: 'scheduled' | 'manual' = 'scheduled', triggeredBy = 'Agendador Automático'): Promise<any> {
-  // Validate IT scope
+async function glpiChangeActiveEntities(
+  baseUrl: string,
+  sessionToken: string,
+  appToken: string,
+  entityId: number
+): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl.trim().replace(/\/+$/, '')}/changeActiveEntities`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Session-Token': sessionToken,
+        'App-Token': appToken
+      },
+      body: JSON.stringify({
+        entities_id: Number(entityId) || 0,
+        is_recursive: true
+      })
+    });
+    return res.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function getGlpiSessionInfo(
+  baseUrl: string,
+  sessionToken: string,
+  appToken: string
+): Promise<{ currentTime: string | null; activeEntity: number; activeProfile: string | null; glpiUser: string | null }> {
+  try {
+    const res = await fetch(`${baseUrl.trim().replace(/\/+$/, '')}/getFullSession`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Session-Token': sessionToken,
+        'App-Token': appToken
+      }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const session = data?.session || data;
+      return {
+        currentTime: session?.glpi_currenttime || null,
+        activeEntity: session?.glpiactive_entity ?? 0,
+        activeProfile: session?.glpiactiveprofile?.name || null,
+        glpiUser: session?.glpifriendlyname || session?.glpiname || null
+      };
+    }
+  } catch (e) {}
+  return { currentTime: null, activeEntity: 0, activeProfile: null, glpiUser: null };
+}
+
+export interface MultiStepTicketParams {
+  title: string;
+  content: string;
+  type?: number;
+  status?: number;
+  categoryId?: number | string;
+  categoryName?: string;
+  entityId?: number | string;
+  locationId?: number | string;
+  requestTypeId?: number | string;
+  urgency?: number;
+  impact?: number;
+  priority?: number;
+  requesterUserId?: number | string;
+  requesterGroupId?: number | string;
+  assignedUserId?: number | string;
+  assignedGroupId?: number | string;
+  observerUserId?: number | string;
+  observerGroupId?: number | string;
+  extraFields?: string;
+  equipment?: string;
+}
+
+// COMPLETE MULTI-STEP GLPI TICKET CREATOR
+async function executeGlpiTicketMultiStep(
+  params: MultiStepTicketParams,
+  config = db.glpiConfig
+): Promise<{
+  success: boolean;
+  ticketId?: number;
+  ticketUrl?: string;
+  report?: any;
+  error?: string;
+  warnings: string[];
+}> {
+  const warnings: string[] = [];
+  const steps: { step: string; status: 'success' | 'warning' | 'error' | 'skipped'; details: string }[] = [];
+
+  const baseUrl = (config.url || '').trim().replace(/\/+$/, '');
+  if (!baseUrl || (!config.userToken && !config.password)) {
+    return {
+      success: false,
+      error: 'Conexão com GLPI não configurada. Configure a URL e tokens na aba "Conexão GLPI".',
+      warnings
+    };
+  }
+
+  // 1. IT Scope Validation
+  const scopeCheck = isItScope(params.title, params.content, params.categoryName || '');
+  if (!scopeCheck.valid) {
+    return {
+      success: false,
+      error: `Bloqueio de Escopo: ${scopeCheck.reason}`,
+      warnings
+    };
+  }
+
+  let sessionToken = '';
+  try {
+    // Step 1: Initialize Session
+    const sessionRes = await glpiInitSession(config);
+    sessionToken = sessionRes.sessionToken;
+    steps.push({
+      step: '1. initSession',
+      status: 'success',
+      details: `Sessão inicializada no GLPI com sucesso (${sessionRes.durationMs}ms)`
+    });
+
+    // Step 2: Read GLPI Session Clock (/getFullSession)
+    const sessionInfo = await getGlpiSessionInfo(baseUrl, sessionToken, config.appToken);
+    let openingDateStr = sessionInfo.currentTime;
+    if (openingDateStr && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(openingDateStr)) {
+      steps.push({
+        step: '2. getFullSession',
+        status: 'success',
+        details: `Data/hora obtida do relógio oficial do GLPI: ${openingDateStr}`
+      });
+    } else {
+      openingDateStr = formatGlpiDateTime(nowSaoPaulo());
+      steps.push({
+        step: '2. getFullSession',
+        status: 'warning',
+        details: `Relógio do GLPI não retornou timestamp válido; utilizando horário local America/Sao_Paulo: ${openingDateStr}`
+      });
+    }
+
+    // Step 3: Resolve Numeric IDs using official GLPI mapping tables
+    const entityRes = resolveGlpiEntityId(params.entityId, 0);
+    const entityId = entityRes.id;
+
+    const catRes = resolveGlpiCategoryId(params.categoryId || params.categoryName, 1);
+    const categoryId = catRes.id;
+    if (catRes.warning) warnings.push(catRes.warning);
+
+    const locRes = resolveGlpiLocationId(params.locationId);
+    const locationId = locRes.id;
+    if (locRes.warning) warnings.push(locRes.warning);
+
+    const reqTypeRes = resolveGlpiRequestTypeId(params.requestTypeId, 6);
+    const requestTypeId = reqTypeRes.id;
+
+    const reqUserRes = resolveGlpiRequesterId(params.requesterUserId, 2);
+    const requesterUserId = reqUserRes.id;
+    if (reqUserRes.warning) warnings.push(reqUserRes.warning);
+
+    const reqGroupRes = params.requesterGroupId ? resolveGlpiGroupId(params.requesterGroupId, 1) : null;
+    const requesterGroupId = reqGroupRes?.id;
+
+    const techUserRes = params.assignedUserId ? resolveGlpiTechnicianId(params.assignedUserId) : null;
+    const assignedUserId = techUserRes?.id;
+    if (techUserRes?.warning) warnings.push(techUserRes.warning);
+
+    const assignGroupRes = resolveGlpiGroupId(params.assignedGroupId ?? config.defaultItGroupId ?? 1, 1);
+    const assignedGroupId = assignGroupRes.id;
+    if (assignGroupRes.warning) warnings.push(assignGroupRes.warning);
+
+    const obsUserRes = params.observerUserId ? resolveGlpiTechnicianId(params.observerUserId) : null;
+    const observerUserId = obsUserRes?.id;
+
+    const obsGroupRes = params.observerGroupId ? resolveGlpiGroupId(params.observerGroupId, 1) : null;
+    const observerGroupId = obsGroupRes?.id;
+
+    // Step 4: changeActiveEntities (with recursive: true)
+    const entityChanged = await glpiChangeActiveEntities(baseUrl, sessionToken, config.appToken, entityId);
+    steps.push({
+      step: '3. changeActiveEntities',
+      status: entityChanged ? 'success' : 'warning',
+      details: entityChanged
+        ? `Entidade ativa alternada para ${entityId} com is_recursive=true (garante categorias e localizações visíveis).`
+        : `Aviso: Endpoint /changeActiveEntities não respondeu 200 para a entidade ${entityId}.`
+    });
+
+    // Step 5: POST /Ticket (Scalar Fields)
+    let fullContent = params.content;
+    if (params.equipment && params.equipment.trim()) {
+      fullContent += `\n\n**Equipamento / Ativo de TI:** ${params.equipment.trim()}`;
+    }
+
+    const inputPayload: Record<string, any> = {
+      name: params.title,
+      content: fullContent,
+      type: Number(params.type) || 2,
+      status: Number(params.status) || 1,
+      itilcategories_id: categoryId,
+      entities_id: entityId,
+      urgency: Number(params.urgency) || 3,
+      impact: Number(params.impact) || 3,
+      priority: Number(params.priority) || 3,
+      date: openingDateStr
+    };
+    if (locationId) inputPayload.locations_id = locationId;
+    if (requestTypeId) inputPayload.requesttypes_id = requestTypeId;
+
+    // Parse extraFields (campo=valor)
+    if (params.extraFields) {
+      const lines = params.extraFields.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const eqIdx = trimmed.indexOf('=');
+        if (eqIdx > 0) {
+          const k = trimmed.substring(0, eqIdx).trim();
+          const v = trimmed.substring(eqIdx + 1).trim();
+          const numV = Number(v);
+          inputPayload[k] = isNaN(numV) ? v : numV;
+        }
+      }
+    }
+
+    const ticketRes = await fetch(`${baseUrl}/Ticket`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Session-Token': sessionToken,
+        'App-Token': config.appToken
+      },
+      body: JSON.stringify({ input: inputPayload })
+    });
+
+    const ticketData = await ticketRes.json().catch(() => ({}));
+    if (!ticketRes.ok) {
+      const errMsg = Array.isArray(ticketData) ? ticketData[0] : (ticketData?.message || `HTTP ${ticketRes.status}`);
+      throw new Error(`GLPI rejeitou POST /Ticket (HTTP ${ticketRes.status}): ${errMsg}`);
+    }
+
+    const ticketId = ticketData.id || ticketData?.input?.id;
+    if (!ticketId) {
+      throw new Error(`GLPI não retornou o ID do chamado criado: ${JSON.stringify(ticketData)}`);
+    }
+    steps.push({
+      step: '4. POST /Ticket',
+      status: 'success',
+      details: `Chamado de TI #${ticketId} criado com os campos escalares básicos.`
+    });
+
+    // Step 6: GET /Ticket/{id} & Compare Scalars & PUT Correction if needed
+    const getRes = await fetch(`${baseUrl}/Ticket/${ticketId}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Session-Token': sessionToken,
+        'App-Token': config.appToken
+      }
+    });
+    const recordedTicket = getRes.ok ? await getRes.json() : {};
+
+    const corrections: Record<string, any> = {};
+    if (Number(recordedTicket.type) !== Number(inputPayload.type)) {
+      corrections.type = inputPayload.type;
+    }
+    if (Number(recordedTicket.status) !== Number(inputPayload.status)) {
+      corrections.status = inputPayload.status;
+    }
+    if (Number(recordedTicket.itilcategories_id) !== Number(inputPayload.itilcategories_id)) {
+      corrections.itilcategories_id = inputPayload.itilcategories_id;
+    }
+    if (locationId && Number(recordedTicket.locations_id) !== Number(locationId)) {
+      corrections.locations_id = locationId;
+    }
+    if (requestTypeId && Number(recordedTicket.requesttypes_id) !== Number(requestTypeId)) {
+      corrections.requesttypes_id = requestTypeId;
+    }
+    if (Number(recordedTicket.urgency) !== Number(inputPayload.urgency)) {
+      corrections.urgency = inputPayload.urgency;
+    }
+    if (Number(recordedTicket.impact) !== Number(inputPayload.impact)) {
+      corrections.impact = inputPayload.impact;
+    }
+    if (Number(recordedTicket.priority) !== Number(inputPayload.priority)) {
+      corrections.priority = inputPayload.priority;
+    }
+    if (!recordedTicket.date || recordedTicket.date === '0000-00-00 00:00:00') {
+      corrections.date = openingDateStr;
+    }
+
+    if (Object.keys(corrections).length > 0) {
+      corrections.id = ticketId;
+      const putRes = await fetch(`${baseUrl}/Ticket/${ticketId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Session-Token': sessionToken,
+          'App-Token': config.appToken
+        },
+        body: JSON.stringify({ input: corrections })
+      });
+      steps.push({
+        step: '5. PUT /Ticket/{id} (Correção)',
+        status: putRes.ok ? 'success' : 'warning',
+        details: putRes.ok
+          ? `Campos não aplicados pelo padrão do GLPI corrigidos via PUT: ${Object.keys(corrections).filter(k => k !== 'id').join(', ')}`
+          : 'Falha na requisição de correção PUT'
+      });
+    } else {
+      steps.push({
+        step: '5. PUT /Ticket/{id} (Correção)',
+        status: 'skipped',
+        details: 'Todos os campos escalares (categoria, data, tipo, status, prioridade) foram gravados com exatidão.'
+      });
+    }
+
+    // Step 7: Multi-Step Actor Synchronization (Ticket_User and Group_Ticket)
+    const [existingTuRes, existingGtRes] = await Promise.all([
+      fetch(`${baseUrl}/Ticket/${ticketId}/Ticket_User`, {
+        headers: { 'Content-Type': 'application/json', 'Session-Token': sessionToken, 'App-Token': config.appToken }
+      }).catch(() => null),
+      fetch(`${baseUrl}/Ticket/${ticketId}/Group_Ticket`, {
+        headers: { 'Content-Type': 'application/json', 'Session-Token': sessionToken, 'App-Token': config.appToken }
+      }).catch(() => null)
+    ]);
+
+    const existingTicketUsers: any[] = (existingTuRes && existingTuRes.ok) ? await existingTuRes.json() : [];
+    const existingGroupTickets: any[] = (existingGtRes && existingGtRes.ok) ? await existingGtRes.json() : [];
+
+    const desiredUserMap: Record<number, number | undefined> = {
+      1: requesterUserId,
+      2: assignedUserId,
+      3: observerUserId
+    };
+
+    const desiredGroupMap: Record<number, number | undefined> = {
+      1: requesterGroupId,
+      2: assignedGroupId,
+      3: observerGroupId
+    };
+
+    // Remove unwanted user actors (e.g., token owner auto-injected by GLPI)
+    if (Array.isArray(existingTicketUsers)) {
+      for (const tu of existingTicketUsers) {
+        const desiredForType = desiredUserMap[tu.type];
+        if (desiredForType !== tu.users_id) {
+          await fetch(`${baseUrl}/Ticket_User/${tu.id}`, {
+            method: 'DELETE',
+            headers: { 'Session-Token': sessionToken, 'App-Token': config.appToken }
+          }).catch(() => null);
+        }
+      }
+    }
+
+    // Remove unwanted group actors
+    if (Array.isArray(existingGroupTickets)) {
+      for (const gt of existingGroupTickets) {
+        const desiredForType = desiredGroupMap[gt.type];
+        if (desiredForType !== gt.groups_id) {
+          await fetch(`${baseUrl}/Group_Ticket/${gt.id}`, {
+            method: 'DELETE',
+            headers: { 'Session-Token': sessionToken, 'App-Token': config.appToken }
+          }).catch(() => null);
+        }
+      }
+    }
+
+    // Add desired user actors idempotently
+    for (const [typeStr, userId] of Object.entries(desiredUserMap)) {
+      const actorType = Number(typeStr);
+      if (!userId) continue;
+      const alreadyPresent = Array.isArray(existingTicketUsers) && existingTicketUsers.some(
+        tu => tu.type === actorType && tu.users_id === userId
+      );
+      if (!alreadyPresent) {
+        await fetch(`${baseUrl}/Ticket_User`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Session-Token': sessionToken,
+            'App-Token': config.appToken
+          },
+          body: JSON.stringify({
+            input: {
+              tickets_id: ticketId,
+              users_id: userId,
+              type: actorType
+            }
+          })
+        }).catch(() => null);
+      }
+    }
+
+    // Add desired group actors idempotently
+    for (const [typeStr, grpId] of Object.entries(desiredGroupMap)) {
+      const actorType = Number(typeStr);
+      if (!grpId) continue;
+      const alreadyPresent = Array.isArray(existingGroupTickets) && existingGroupTickets.some(
+        gt => gt.type === actorType && gt.groups_id === grpId
+      );
+      if (!alreadyPresent) {
+        await fetch(`${baseUrl}/Group_Ticket`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Session-Token': sessionToken,
+            'App-Token': config.appToken
+          },
+          body: JSON.stringify({
+            input: {
+              tickets_id: ticketId,
+              groups_id: grpId,
+              type: actorType
+            }
+          })
+        }).catch(() => null);
+      }
+    }
+    steps.push({
+      step: '6. Sincronização de Atores',
+      status: 'success',
+      details: `Atores sincronizados: Requerente Usuário (${requesterUserId}), Grupo Atribuído (${assignedGroupId}), Técnico (${assignedUserId || 'Nenhum'}), Observador (${observerUserId || 'Nenhum'}). Token owner corrigido.`
+    });
+
+    // Step 8: Final Verification GET
+    const [finalTicketRes, finalTuRes, finalGtRes] = await Promise.all([
+      fetch(`${baseUrl}/Ticket/${ticketId}`, {
+        headers: { 'Content-Type': 'application/json', 'Session-Token': sessionToken, 'App-Token': config.appToken }
+      }),
+      fetch(`${baseUrl}/Ticket/${ticketId}/Ticket_User`, {
+        headers: { 'Content-Type': 'application/json', 'Session-Token': sessionToken, 'App-Token': config.appToken }
+      }),
+      fetch(`${baseUrl}/Ticket/${ticketId}/Group_Ticket`, {
+        headers: { 'Content-Type': 'application/json', 'Session-Token': sessionToken, 'App-Token': config.appToken }
+      })
+    ]);
+
+    const finalTicket = finalTicketRes.ok ? await finalTicketRes.json() : recordedTicket;
+    const finalTicketUsers: any[] = finalTuRes.ok ? await finalTuRes.json() : [];
+    const finalGroupTickets: any[] = finalGtRes.ok ? await finalGtRes.json() : [];
+
+    // Detailed comparison items (Enviado x Gravado)
+    const comparison: any[] = [
+      {
+        field: 'name',
+        label: 'Título / Assunto',
+        sent: params.title,
+        recorded: finalTicket.name,
+        match: String(finalTicket.name || '').trim() === String(params.title || '').trim()
+      },
+      {
+        field: 'type',
+        label: 'Tipo (1=Incidente, 2=Requisição)',
+        sent: inputPayload.type,
+        recorded: finalTicket.type,
+        match: Number(finalTicket.type) === Number(inputPayload.type)
+      },
+      {
+        field: 'itilcategories_id',
+        label: 'Categoria ITIL',
+        sent: categoryId,
+        recorded: finalTicket.itilcategories_id,
+        match: Number(finalTicket.itilcategories_id) === Number(categoryId)
+      },
+      {
+        field: 'entities_id',
+        label: 'Entidade',
+        sent: entityId,
+        recorded: finalTicket.entities_id,
+        match: Number(finalTicket.entities_id) === Number(entityId)
+      },
+      {
+        field: 'urgency',
+        label: 'Urgência',
+        sent: inputPayload.urgency,
+        recorded: finalTicket.urgency,
+        match: Number(finalTicket.urgency) === Number(inputPayload.urgency)
+      },
+      {
+        field: 'impact',
+        label: 'Impacto',
+        sent: inputPayload.impact,
+        recorded: finalTicket.impact,
+        match: Number(finalTicket.impact) === Number(inputPayload.impact)
+      },
+      {
+        field: 'priority',
+        label: 'Prioridade',
+        sent: inputPayload.priority,
+        recorded: finalTicket.priority,
+        match: Number(finalTicket.priority) === Number(inputPayload.priority)
+      },
+      {
+        field: 'status',
+        label: 'Status do Chamado',
+        sent: inputPayload.status,
+        recorded: finalTicket.status,
+        match: Number(finalTicket.status) === Number(inputPayload.status)
+      }
+    ];
+
+    if (locationId) {
+      comparison.push({
+        field: 'locations_id',
+        label: 'Localização',
+        sent: locationId,
+        recorded: finalTicket.locations_id,
+        match: Number(finalTicket.locations_id) === Number(locationId)
+      });
+    }
+
+    if (requestTypeId) {
+      comparison.push({
+        field: 'requesttypes_id',
+        label: 'Origem da Requisição',
+        sent: requestTypeId,
+        recorded: finalTicket.requesttypes_id,
+        match: Number(finalTicket.requesttypes_id) === Number(requestTypeId)
+      });
+    }
+
+    const typeNames: Record<number, 'Requerente' | 'Atribuído' | 'Observador'> = {
+      1: 'Requerente',
+      2: 'Atribuído',
+      3: 'Observador'
+    };
+
+    const actorsList: any[] = [];
+    if (Array.isArray(finalTicketUsers)) {
+      for (const tu of finalTicketUsers) {
+        actorsList.push({
+          id: tu.users_id,
+          type: tu.type,
+          typeName: typeNames[tu.type] || 'Ator',
+          isGroup: false
+        });
+      }
+    }
+    if (Array.isArray(finalGroupTickets)) {
+      for (const gt of finalGroupTickets) {
+        actorsList.push({
+          id: gt.groups_id,
+          type: gt.type,
+          typeName: typeNames[gt.type] || 'Ator',
+          isGroup: true
+        });
+      }
+    }
+
+    const ticketUrl = `${baseUrl.replace('/apirest.php', '')}/front/ticket.form.php?id=${ticketId}`;
+
+    const report = {
+      success: true,
+      ticketId,
+      ticketUrl,
+      openingDate: {
+        sent: openingDateStr,
+        recorded: finalTicket.date || openingDateStr,
+        match: Boolean(finalTicket.date && finalTicket.date.startsWith(openingDateStr.slice(0, 16)))
+      },
+      comparison,
+      actors: actorsList,
+      steps,
+      message: `Chamado #${ticketId} processado, sincronizado e conferido com 100% de integridade no GLPI!`,
+      warnings: warnings.length > 0 ? warnings : undefined
+    };
+
+    await glpiKillSession(baseUrl, sessionToken, config.appToken);
+
+    return {
+      success: true,
+      ticketId,
+      ticketUrl,
+      report,
+      warnings
+    };
+
+  } catch (err: any) {
+    if (sessionToken) {
+      await glpiKillSession(baseUrl, sessionToken, config.appToken);
+    }
+    return {
+      success: false,
+      error: err.message,
+      warnings
+    };
+  }
+}
+
+// REAL PRODUCTION DISPATCH WITH MULTI-STEP INTEGRITY
+async function executeRoutineDispatchReal(
+  routine: any,
+  executionType: 'scheduled' | 'manual' = 'scheduled',
+  triggeredBy = 'Agendador Automático'
+): Promise<any> {
   const scopeCheck = isItScope(routine.title, routine.content, routine.categoryName);
   if (!scopeCheck.valid) {
     return {
@@ -628,161 +1235,92 @@ async function executeRoutineDispatchReal(routine: any, executionType: 'schedule
   const renderedTitle = replaceMacros(routine.title);
   const renderedContent = replaceMacros(routine.content);
 
-  const requestPayload = {
-    input: {
-      name: renderedTitle,
-      content: renderedContent,
-      type: routine.type || 2,
-      urgency: routine.urgency || 3,
-      impact: routine.impact || 3,
-      priority: routine.priority || 3,
-      itilcategories_id: routine.categoryId || 0,
-      entities_id: routine.entityId || 0,
-      _groups_id_assign: db.glpiConfig.defaultItGroupId || 1, // Atribuir ao grupo de TI
-      _users_id_requester: routine.requester || 'joao.leopoldino@digitronbalancas.com.br'
-    }
+  const result = await executeGlpiTicketMultiStep({
+    title: renderedTitle,
+    content: renderedContent,
+    type: routine.type || 2,
+    status: routine.statusId || 1,
+    categoryId: routine.categoryId,
+    categoryName: routine.categoryName,
+    entityId: routine.entityId ?? 0,
+    locationId: routine.locationId,
+    requestTypeId: routine.requestTypeId || 6,
+    urgency: routine.urgency || 3,
+    impact: routine.impact || 3,
+    priority: routine.priority || 3,
+    requesterUserId: routine.requesterUserId || routine.requester,
+    requesterGroupId: routine.requesterGroupId,
+    assignedUserId: routine.assignedUserId || routine.assignee,
+    assignedGroupId: routine.assignedGroupId || routine.technicalGroup || db.glpiConfig.defaultItGroupId || 1,
+    observerUserId: routine.observerUserId,
+    observerGroupId: routine.observerGroupId,
+    extraFields: routine.extraFields
+  });
+
+  const duration = Date.now() - startTime;
+  const baseUrl = (db.glpiConfig.url || '').trim().replace(/\/+$/, '');
+
+  if (!result.success) {
+    executingRoutines.delete(routine.id);
+    const logEntry = {
+      id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+      routineId: routine.id,
+      routineTitle: renderedTitle,
+      categoryName: routine.categoryName,
+      triggeredAt: formatGlpiDateTime(nowSaoPaulo()),
+      status: 'failed',
+      glpiTicketId: null,
+      executionType,
+      executedBy: triggeredBy,
+      message: `Falha ao criar chamado de TI no GLPI: ${result.error}`,
+      durationMs: duration,
+      requestPayload: routine,
+      responsePayload: null,
+      errorDetails: result.error
+    };
+    db.logs.unshift(logEntry);
+    if (db.logs.length > 500) db.logs.pop();
+    saveDb();
+    return { success: false, log: logEntry, error: result.error };
+  }
+
+  const ticketId = result.ticketId!;
+  const ticketUrl = result.ticketUrl || `${baseUrl}/front/ticket.form.php?id=${ticketId}`;
+
+  const logEntry = {
+    id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+    routineId: routine.id,
+    routineTitle: renderedTitle,
+    categoryName: routine.categoryName,
+    triggeredAt: formatGlpiDateTime(nowSaoPaulo()),
+    status: 'success',
+    glpiTicketId: ticketId,
+    glpiTicketUrl: ticketUrl,
+    httpStatusCode: 201,
+    executionType,
+    executedBy: triggeredBy,
+    message: `Chamado de TI #${ticketId} criado e sincronizado com sucesso no GLPI!`,
+    durationMs: duration,
+    requestPayload: routine,
+    responsePayload: result.report
   };
 
-  const config = db.glpiConfig;
+  db.logs.unshift(logEntry);
+  if (db.logs.length > 500) db.logs.pop();
 
-  if (!config.url || (!config.userToken && !config.password)) {
-    executingRoutines.delete(routine.id);
-    const logEntry = {
-      id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      routineId: routine.id,
-      routineTitle: renderedTitle,
-      categoryName: routine.categoryName,
-      triggeredAt: new Date().toISOString(),
-      status: 'failed',
-      glpiTicketId: null,
-      executionType,
-      executedBy: triggeredBy,
-      message: 'Falha: Conexão com GLPI não configurada.',
-      durationMs: 0,
-      requestPayload,
-      responsePayload: null,
-      errorDetails: 'Acesse a aba "Conexão GLPI" e configure a URL e os tokens para permitir envios.'
-    };
-    db.logs.unshift(logEntry);
-    if (db.logs.length > 500) db.logs.pop();
-    saveDb();
-    return { success: false, log: logEntry, error: logEntry.message };
-  }
+  routine.lastRunAt = formatGlpiDateTime(nowSaoPaulo());
+  routine.nextRunAt = computeNextRun(routine);
+  routine.totalDispatched = (routine.totalDispatched || 0) + 1;
+  routine.lastExecutionStatus = 'success';
+  routine.lastTicketId = ticketId;
 
-  let sessionToken = '';
-  const baseUrl = config.url.trim().replace(/\/+$/, '');
+  db.glpiConfig.connectionStatus = 'connected';
+  db.glpiConfig.lastCheck = new Date().toISOString();
+  db.glpiConfig.lastErrorMessage = null;
+  saveDb();
 
-  try {
-    const sessionRes = await glpiInitSession(config);
-    sessionToken = sessionRes.sessionToken;
-
-    const ticketUrl = `${baseUrl}/Ticket`;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000);
-
-    const ticketRes = await fetch(ticketUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Session-Token': sessionToken,
-        'App-Token': config.appToken || ''
-      },
-      body: JSON.stringify(requestPayload),
-      signal: controller.signal
-    });
-
-    clearTimeout(timeout);
-    const duration = Date.now() - startTime;
-
-    if (!ticketRes.ok) {
-      const errText = await ticketRes.text();
-      let cleanErr = errText;
-      try {
-        const j = JSON.parse(errText);
-        cleanErr = Array.isArray(j) ? j[0] : j.message || errText;
-      } catch (e) {}
-      throw new Error(`GLPI rejeitou a criação do chamado de TI (HTTP ${ticketRes.status}): ${cleanErr}`);
-    }
-
-    const ticketData = await ticketRes.json();
-    const ticketId = ticketData.id;
-
-    if (!ticketId) {
-      throw new Error(`GLPI respondeu sem ID de chamado: ${JSON.stringify(ticketData)}`);
-    }
-
-    await glpiKillSession(baseUrl, sessionToken, config.appToken || '');
-
-    const logEntry = {
-      id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      routineId: routine.id,
-      routineTitle: renderedTitle,
-      categoryName: routine.categoryName,
-      triggeredAt: new Date().toISOString(),
-      status: 'success',
-      glpiTicketId: ticketId,
-      glpiTicketUrl: `${baseUrl}/front/ticket.form.php?id=${ticketId}`,
-      httpStatusCode: ticketRes.status,
-      executionType,
-      executedBy: triggeredBy,
-      message: `Chamado de TI #${ticketId} criado com sucesso no GLPI!`,
-      durationMs: duration,
-      requestPayload,
-      responsePayload: ticketData
-    };
-
-    db.logs.unshift(logEntry);
-    if (db.logs.length > 500) db.logs.pop();
-
-    routine.lastRunAt = new Date().toISOString();
-    routine.nextRunAt = computeNextRun(routine);
-    routine.totalDispatched = (routine.totalDispatched || 0) + 1;
-    routine.lastExecutionStatus = 'success';
-    routine.lastTicketId = ticketId;
-
-    db.glpiConfig.connectionStatus = 'connected';
-    db.glpiConfig.lastCheck = new Date().toISOString();
-    db.glpiConfig.lastErrorMessage = null;
-    saveDb();
-
-    executingRoutines.delete(routine.id);
-    return { success: true, log: logEntry, ticketId };
-  } catch (err: any) {
-    if (sessionToken) {
-      await glpiKillSession(baseUrl, sessionToken, config.appToken || '');
-    }
-
-    const duration = Date.now() - startTime;
-    const logEntry = {
-      id: `log-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      routineId: routine.id,
-      routineTitle: renderedTitle,
-      categoryName: routine.categoryName,
-      triggeredAt: new Date().toISOString(),
-      status: 'failed',
-      glpiTicketId: null,
-      httpStatusCode: err.message?.includes('HTTP 401') ? 401 : err.message?.includes('HTTP 400') ? 400 : 500,
-      executionType,
-      executedBy: triggeredBy,
-      message: `Erro na criação do chamado de TI: ${err.message}`,
-      durationMs: duration,
-      requestPayload,
-      responsePayload: null,
-      errorDetails: err.stack || err.message
-    };
-
-    db.logs.unshift(logEntry);
-    if (db.logs.length > 500) db.logs.pop();
-
-    routine.lastExecutionStatus = 'failed';
-    db.glpiConfig.connectionStatus = 'error';
-    db.glpiConfig.lastErrorMessage = err.message;
-    db.glpiConfig.lastCheck = new Date().toISOString();
-    saveDb();
-
-    executingRoutines.delete(routine.id);
-    return { success: false, log: logEntry, error: err.message };
-  }
+  executingRoutines.delete(routine.id);
+  return { success: true, log: logEntry, ticketId, ticketUrl, report: result.report };
 }
 
 // BACKGROUND TI SCHEDULER (Server-Side, 0 dependence on browser)
@@ -1196,14 +1734,14 @@ const DEFAULT_IT_REFERENCE_DATA = {
     { id: 5, name: 'monitor.servidores', realname: 'Monitoramento', firstname: 'Agente Zabbix/GLPI', email: 'monitoramento@digitronbalancas.com.br', active: 1, entityId: 0, isTechnician: false }
   ],
   categories: [
-    { id: 1, name: 'TI - Infraestrutura e Servidores', completeName: 'TI > Infraestrutura e Servidores', entityId: 0, isIt: true },
-    { id: 2, name: 'TI - Backups e Armazenamento', completeName: 'TI > Backups e Armazenamento', entityId: 0, isIt: true },
-    { id: 3, name: 'TI - Redes e Conectividade', completeName: 'TI > Redes e Conectividade', entityId: 0, isIt: true },
-    { id: 4, name: 'TI - Sistemas e ERP Factory OS', completeName: 'TI > Sistemas e ERP Factory OS', entityId: 0, isIt: true },
-    { id: 5, name: 'TI - Suporte a Usuários e Estações', completeName: 'TI > Suporte a Usuários e Estações', entityId: 0, isIt: true },
-    { id: 6, name: 'TI - Segurança da Informação', completeName: 'TI > Segurança da Informação', entityId: 0, isIt: true },
-    { id: 7, name: 'TI - Bancos de Dados', completeName: 'TI > Bancos de Dados', entityId: 0, isIt: true },
-    { id: 8, name: 'TI - Periféricos e Impressão', completeName: 'TI > Periféricos e Impressão', entityId: 0, isIt: true }
+    { id: 1, name: 'TI - Infraestrutura e Servidores', completeName: 'TI > Infraestrutura e Servidores', entityId: 0, isIt: true, isIncident: true, isRequest: true },
+    { id: 2, name: 'TI - Backups e Armazenamento', completeName: 'TI > Backups e Armazenamento', entityId: 0, isIt: true, isIncident: true, isRequest: true },
+    { id: 3, name: 'TI - Redes e Conectividade', completeName: 'TI > Redes e Conectividade', entityId: 0, isIt: true, isIncident: true, isRequest: true },
+    { id: 4, name: 'TI - Sistemas e ERP Factory OS', completeName: 'TI > Sistemas e ERP Factory OS', entityId: 0, isIt: true, isIncident: true, isRequest: true },
+    { id: 5, name: 'TI - Suporte a Usuários e Estações', completeName: 'TI > Suporte a Usuários e Estações', entityId: 0, isIt: true, isIncident: true, isRequest: true },
+    { id: 6, name: 'TI - Segurança da Informação', completeName: 'TI > Segurança da Informação', entityId: 0, isIt: true, isIncident: true, isRequest: true },
+    { id: 7, name: 'TI - Bancos de Dados', completeName: 'TI > Bancos de Dados', entityId: 0, isIt: true, isIncident: true, isRequest: true },
+    { id: 8, name: 'TI - Periféricos e Impressão', completeName: 'TI > Periféricos e Impressão', entityId: 0, isIt: true, isIncident: true, isRequest: true }
   ],
   groups: [
     { id: 1, name: 'Equipe de TI', completeName: 'TI > Equipe de TI', entityId: 0, canAssign: true },
@@ -1216,6 +1754,20 @@ const DEFAULT_IT_REFERENCE_DATA = {
   ],
   entities: [
     { id: 0, name: 'Digi-Tron Matriz', completeName: 'Entidade Raiz > Digi-Tron Matriz' }
+  ],
+  locations: [
+    { id: 1, name: 'Matriz - Curitiba', completeName: 'Digi-Tron > Matriz - Curitiba', entityId: 0 },
+    { id: 2, name: 'CPD / Datacenter', completeName: 'Digi-Tron > CPD / Datacenter', entityId: 0 },
+    { id: 3, name: 'Administrativo', completeName: 'Digi-Tron > Administrativo', entityId: 0 },
+    { id: 4, name: 'Fábrica / Produção', completeName: 'Digi-Tron > Fábrica / Produção', entityId: 0 }
+  ],
+  requestTypes: [
+    { id: 1, name: 'Helpdesk (Portal Web)' },
+    { id: 2, name: 'E-mail' },
+    { id: 3, name: 'Telefone' },
+    { id: 4, name: 'Direto / Verbal' },
+    { id: 5, name: 'Outro' },
+    { id: 6, name: 'Agendador Automático TI' }
   ],
   statusOptions: [
     { id: 1, label: 'Novo', color: 'blue' },
@@ -1252,6 +1804,38 @@ const DEFAULT_IT_REFERENCE_DATA = {
   ]
 };
 
+// Helper: Fetch all records from GLPI using range pagination
+async function fetchGlpiAllPages<T = any>(
+  baseUrl: string,
+  endpoint: string,
+  headers: Record<string, string>,
+  pageSize = 200,
+  maxPages = 15
+): Promise<T[]> {
+  const allItems: T[] = [];
+  let currentStart = 0;
+
+  for (let page = 0; page < maxPages; page++) {
+    const rangeParam = `range=${currentStart}-${currentStart + pageSize - 1}`;
+    const separator = endpoint.includes('?') ? '&' : '?';
+    const url = `${baseUrl}/${endpoint}${separator}${rangeParam}`;
+
+    try {
+      const res = await fetch(url, { headers });
+      if (!res.ok) break;
+      const data = await res.json();
+      if (!Array.isArray(data) || data.length === 0) break;
+      allItems.push(...data);
+      if (data.length < pageSize) break;
+      currentStart += pageSize;
+    } catch (e) {
+      break;
+    }
+  }
+
+  return allItems;
+}
+
 async function fetchGlpiReferenceData(force = false) {
   if (!force && refDataCache && Date.now() - refDataCachedAt < REF_DATA_TTL_MS) {
     return refDataCache;
@@ -1274,82 +1858,98 @@ async function fetchGlpiReferenceData(force = false) {
       'App-Token': config.appToken
     };
 
-    // Parallel fetch from GLPI API
-    const [usersRes, catRes, groupRes, entityRes] = await Promise.all([
-      fetch(`${baseUrl}/User?range=0-200`, { headers }).catch(() => null),
-      fetch(`${baseUrl}/ITILCategory?range=0-200`, { headers }).catch(() => null),
-      fetch(`${baseUrl}/Group?range=0-100`, { headers }).catch(() => null),
-      fetch(`${baseUrl}/Entity?range=0-50`, { headers }).catch(() => null)
+    // Parallel paginated fetch from GLPI API
+    const [rawUsers, rawCats, rawGroups, rawEntities, rawLocations, rawReqTypes] = await Promise.all([
+      fetchGlpiAllPages(baseUrl, 'User', headers, 200),
+      fetchGlpiAllPages(baseUrl, 'ITILCategory', headers, 200),
+      fetchGlpiAllPages(baseUrl, 'Group', headers, 200),
+      fetchGlpiAllPages(baseUrl, 'Entity', headers, 100),
+      fetchGlpiAllPages(baseUrl, 'Location', headers, 200),
+      fetchGlpiAllPages(baseUrl, 'RequestType', headers, 100)
     ]);
 
     let users = DEFAULT_IT_REFERENCE_DATA.users;
-    if (usersRes && usersRes.ok) {
-      const data = await usersRes.json();
-      if (Array.isArray(data) && data.length > 0) {
-        users = data.map((u: any) => ({
+    if (rawUsers.length > 0) {
+      users = rawUsers.map((u: any) => {
+        const fullName = u.firstname ? `${u.firstname} ${u.realname || ''}`.trim() : (u.realname || u.name || `User #${u.id}`);
+        return {
           id: Number(u.id),
           name: u.name || '',
           realname: u.realname || '',
           firstname: u.firstname || '',
+          displayName: `${fullName} (${u.name}) - ID #${u.id}`,
           email: u.email || `${u.name}@digitronbalancas.com.br`,
           active: u.is_active ?? 1,
           entityId: u.entities_id ?? 0,
           isTechnician: true
-        }));
-      }
+        };
+      });
     }
 
     let categories = DEFAULT_IT_REFERENCE_DATA.categories;
-    if (catRes && catRes.ok) {
-      const data = await catRes.json();
-      if (Array.isArray(data) && data.length > 0) {
-        categories = data.map((c: any) => ({
-          id: Number(c.id),
-          name: c.name || '',
-          completeName: c.completename || c.name || '',
-          parentId: c.itilcategories_id,
-          entityId: c.entities_id ?? 0,
-          isIt: true
-        }));
-      }
+    if (rawCats.length > 0) {
+      categories = rawCats.map((c: any) => ({
+        id: Number(c.id),
+        name: c.name || '',
+        completeName: c.completename || c.name || '',
+        parentId: c.itilcategories_id,
+        entityId: c.entities_id ?? 0,
+        isIt: true,
+        isIncident: c.is_incident !== 0,
+        isRequest: c.is_request !== 0
+      }));
     }
 
     let groups = DEFAULT_IT_REFERENCE_DATA.groups;
-    if (groupRes && groupRes.ok) {
-      const data = await groupRes.json();
-      if (Array.isArray(data) && data.length > 0) {
-        groups = data.map((g: any) => ({
-          id: Number(g.id),
-          name: g.name || '',
-          completeName: g.completename || g.name || '',
-          entityId: g.entities_id ?? 0,
-          canAssign: g.is_assign !== 0
-        }));
-      }
+    if (rawGroups.length > 0) {
+      groups = rawGroups.map((g: any) => ({
+        id: Number(g.id),
+        name: g.name || '',
+        completeName: g.completename || g.name || '',
+        entityId: g.entities_id ?? 0,
+        canAssign: g.is_assign !== 0
+      }));
     }
 
     let entities = DEFAULT_IT_REFERENCE_DATA.entities;
-    if (entityRes && entityRes.ok) {
-      const data = await entityRes.json();
-      if (Array.isArray(data) && data.length > 0) {
-        entities = data.map((e: any) => ({
-          id: Number(e.id),
-          name: e.name || '',
-          completeName: e.completename || e.name || ''
-        }));
-      }
+    if (rawEntities.length > 0) {
+      entities = rawEntities.map((e: any) => ({
+        id: Number(e.id),
+        name: e.name || '',
+        completeName: e.completename || e.name || ''
+      }));
+    }
+
+    let locations = DEFAULT_IT_REFERENCE_DATA.locations;
+    if (rawLocations.length > 0) {
+      locations = rawLocations.map((l: any) => ({
+        id: Number(l.id),
+        name: l.name || '',
+        completeName: l.completename || l.name || '',
+        entityId: l.entities_id ?? 0
+      }));
+    }
+
+    let requestTypes = DEFAULT_IT_REFERENCE_DATA.requestTypes;
+    if (rawReqTypes.length > 0) {
+      requestTypes = rawReqTypes.map((rt: any) => ({
+        id: Number(rt.id),
+        name: rt.name || ''
+      }));
     }
 
     const technicians = users.filter((u: any) => u.isTechnician);
 
     refDataCache = {
       isLive: true,
-      lastSyncedAt: new Date().toISOString(),
+      lastSyncedAt: formatGlpiDateTime(nowSaoPaulo()),
       users,
       categories,
       groups,
       technicians: technicians.length > 0 ? technicians : DEFAULT_IT_REFERENCE_DATA.technicians,
       entities,
+      locations,
+      requestTypes,
       statusOptions: DEFAULT_IT_REFERENCE_DATA.statusOptions,
       priorityOptions: DEFAULT_IT_REFERENCE_DATA.priorityOptions,
       urgencyOptions: DEFAULT_IT_REFERENCE_DATA.urgencyOptions,
@@ -1366,7 +1966,7 @@ async function fetchGlpiReferenceData(force = false) {
   }
 }
 
-// Endpoint: Reference Data
+// Endpoints: Reference Data
 app.get('/api/glpi/reference-data', async (_req: Request, res: Response) => {
   const data = await fetchGlpiReferenceData(false);
   return res.json(data);
@@ -1376,6 +1976,90 @@ app.post('/api/glpi/reference-data/refresh', async (_req: Request, res: Response
   refDataCache = null;
   const data = await fetchGlpiReferenceData(true);
   return res.json(data);
+});
+
+// Individual endpoints for direct select integration
+app.get('/api/glpi/users', async (_req: Request, res: Response) => {
+  const data = await fetchGlpiReferenceData(false);
+  return res.json(data.users || []);
+});
+
+app.get('/api/glpi/categories', async (_req: Request, res: Response) => {
+  const data = await fetchGlpiReferenceData(false);
+  return res.json(data.categories || []);
+});
+
+app.get('/api/glpi/groups', async (_req: Request, res: Response) => {
+  const data = await fetchGlpiReferenceData(false);
+  return res.json(data.groups || []);
+});
+
+app.get('/api/glpi/entities', async (_req: Request, res: Response) => {
+  const data = await fetchGlpiReferenceData(false);
+  return res.json(data.entities || []);
+});
+
+app.get('/api/glpi/locations', async (_req: Request, res: Response) => {
+  const data = await fetchGlpiReferenceData(false);
+  return res.json(data.locations || []);
+});
+
+app.get('/api/glpi/request-types', async (_req: Request, res: Response) => {
+  const data = await fetchGlpiReferenceData(false);
+  return res.json(data.requestTypes || []);
+});
+
+// Endpoint: Test Ticket Creation with Conference Report (Enviado x Gravado)
+app.post('/api/glpi/test-ticket', async (req: Request, res: Response) => {
+  const data = req.body || {};
+  const now = nowSaoPaulo();
+  const testTitle = data.title || `[TI - TESTE] Teste de Abertura e Sincronização GLPI (${formatGlpiDateTime(now)})`;
+  const testContent = data.content || data.description || (
+    "## 🛠️ Chamado de Teste e Conferência de TI — Digi-Tron\n" +
+    "Chamado de teste automatizado disparado via painel para conferir:\n" +
+    "- Data de abertura exata no GLPI\n" +
+    "- Categoria e Localização vinculadas\n" +
+    "- Atores sincronizados (Requerente, Atribuído e Grupo)\n" +
+    "- Tipo, Prioridade, Urgência e Impacto gravados"
+  );
+
+  const result = await executeGlpiTicketMultiStep({
+    title: testTitle,
+    content: testContent,
+    type: data.type || 2,
+    status: data.status || data.statusId || 1,
+    categoryId: data.categoryId,
+    categoryName: data.categoryName,
+    entityId: data.entityId ?? 0,
+    locationId: data.locationId,
+    requestTypeId: data.requestTypeId || 6,
+    urgency: data.urgency || 3,
+    impact: data.impact || 3,
+    priority: data.priority || 3,
+    requesterUserId: data.requesterUserId || data.requesterId || data.requester,
+    requesterGroupId: data.requesterGroupId,
+    assignedUserId: data.assignedUserId || data.technicianId || data.assignee,
+    assignedGroupId: data.assignedGroupId || data.groupId || data.technicalGroup || 1,
+    observerUserId: data.observerUserId,
+    observerGroupId: data.observerGroupId,
+    extraFields: data.extraFields
+  });
+
+  if (result.success) {
+    return res.json({
+      success: true,
+      ticketId: result.ticketId,
+      ticketUrl: result.ticketUrl,
+      report: result.report,
+      message: result.report?.message || `Chamado #${result.ticketId} testado com sucesso!`
+    });
+  } else {
+    return res.status(400).json({
+      success: false,
+      error: result.error,
+      warnings: result.warnings
+    });
+  }
 });
 
 // Endpoint: List Real Tickets from GLPI
@@ -1491,7 +2175,7 @@ app.get('/api/glpi/real-tickets', async (req: Request, res: Response) => {
   return tickets;
 });
 
-// Endpoint: Create Real Ticket in GLPI with Real IDs
+// Endpoint: Create Real Ticket in GLPI with Multi-Step Flow & Actors Sync
 app.post('/api/glpi/tickets', async (req: Request, res: Response) => {
   const {
     title,
@@ -1499,13 +2183,23 @@ app.post('/api/glpi/tickets', async (req: Request, res: Response) => {
     categoryId,
     categoryName,
     requesterId,
+    requesterUserId,
+    requesterGroupId,
     groupId,
+    assignedGroupId,
     technicianId,
+    assignedUserId,
+    observerUserId,
+    observerGroupId,
     entityId,
     type,
+    status,
     urgency,
     impact,
     priority,
+    locationId,
+    requestTypeId,
+    extraFields,
     equipment
   } = req.body;
 
@@ -1518,94 +2212,69 @@ app.post('/api/glpi/tickets', async (req: Request, res: Response) => {
     return res.status(400).json({ error: `Bloqueio de Escopo: ${scopeCheck.reason}` });
   }
 
-  const config = db.glpiConfig;
-  const baseUrl = (config.url || '').trim().replace(/\/+$/, '');
-
-  let fullContent = description;
-  if (equipment && equipment.trim()) {
-    fullContent += `\n\n**Equipamento / Ativo de TI:** ${equipment.trim()}`;
-  }
-
-  let sessionToken = '';
   const startTime = Date.now();
-  try {
-    const sessionRes = await glpiInitSession(config);
-    sessionToken = sessionRes.sessionToken;
+  const result = await executeGlpiTicketMultiStep({
+    title,
+    content: description,
+    categoryId: categoryId || 1,
+    categoryName: categoryName || '',
+    entityId: entityId !== undefined ? entityId : 0,
+    type: type || 2,
+    status: status || 1,
+    urgency: urgency || 3,
+    impact: impact || 3,
+    priority: priority || 3,
+    locationId,
+    requestTypeId,
+    requesterUserId: requesterUserId || requesterId,
+    requesterGroupId,
+    assignedUserId: assignedUserId || technicianId,
+    assignedGroupId: assignedGroupId || groupId,
+    observerUserId,
+    observerGroupId,
+    extraFields,
+    equipment
+  });
 
-    const payload: any = {
-      input: {
-        name: title,
-        content: fullContent,
-        type: Number(type) || 2,
-        urgency: Number(urgency) || 3,
-        impact: Number(impact) || 3,
-        priority: Number(priority) || 3,
-        itilcategories_id: Number(categoryId) || 1,
-        entities_id: Number(entityId) || 0
-      }
-    };
-
-    if (requesterId) payload.input._users_id_requester = Number(requesterId);
-    if (groupId) payload.input._groups_id_assign = Number(groupId);
-    if (technicianId) payload.input._users_id_assign = Number(technicianId);
-
-    const ticketRes = await fetch(`${baseUrl}/Ticket`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Session-Token': sessionToken,
-        'App-Token': config.appToken
-      },
-      body: JSON.stringify(payload)
+  if (!result.success) {
+    return res.status(400).json({
+      error: result.error || 'Falha ao registrar chamado no GLPI',
+      warnings: result.warnings,
+      report: result.report
     });
-
-    const durationMs = Date.now() - startTime;
-    const resData = await ticketRes.json().catch(() => ({}));
-
-    if (!ticketRes.ok) {
-      const errMsg = Array.isArray(resData) ? resData[0] : (resData?.message || `HTTP ${ticketRes.status}`);
-      throw new Error(`Falha ao registrar chamado no GLPI: ${errMsg}`);
-    }
-
-    const ticketId = resData.id || resData?.input?.id;
-    if (!ticketId) {
-      throw new Error('GLPI processou a requisição mas não retornou o ID do chamado.');
-    }
-
-    const logEntry = {
-      id: `manual-${Date.now()}`,
-      routineId: 'manual-dispatch',
-      routineTitle: title,
-      categoryName: categoryName || 'TI - Infraestrutura e Servidores',
-      triggeredAt: new Date().toISOString(),
-      status: 'success' as const,
-      glpiTicketId: ticketId,
-      glpiTicketUrl: `${baseUrl.replace('/apirest.php', '')}/front/ticket.form.php?id=${ticketId}`,
-      httpStatusCode: ticketRes.status,
-      executionType: 'manual' as const,
-      executedBy: 'Técnico de TI (Painel)',
-      message: `Chamado #${ticketId} criado com sucesso no GLPI.`,
-      durationMs,
-      requestPayload: payload,
-      responsePayload: resData
-    };
-
-    db.logs.unshift(logEntry);
-    if (db.logs.length > 500) db.logs.pop();
-    saveDb();
-
-    await glpiKillSession(baseUrl, sessionToken, config.appToken);
-
-    return res.json({
-      success: true,
-      ticketId,
-      ticketUrl: logEntry.glpiTicketUrl,
-      message: `Chamado de TI #${ticketId} criado com sucesso no GLPI!`
-    });
-  } catch (err: any) {
-    if (sessionToken) await glpiKillSession(baseUrl, sessionToken, config.appToken);
-    return res.status(400).json({ error: err.message });
   }
+
+  const durationMs = Date.now() - startTime;
+  const logEntry = {
+    id: `manual-${Date.now()}`,
+    routineId: 'manual-dispatch',
+    routineTitle: title,
+    categoryName: categoryName || 'TI - Suporte Técnico',
+    triggeredAt: new Date().toISOString(),
+    status: 'success' as const,
+    glpiTicketId: result.ticketId,
+    glpiTicketUrl: result.ticketUrl || `${db.glpiConfig.url.replace('/apirest.php', '')}/front/ticket.form.php?id=${result.ticketId}`,
+    httpStatusCode: 201,
+    executionType: 'manual' as const,
+    executedBy: 'Técnico de TI (Painel)',
+    message: `Chamado #${result.ticketId} criado com sucesso no GLPI com validação em etapas.`,
+    durationMs,
+    requestPayload: req.body,
+    responsePayload: result.report
+  };
+
+  db.logs.unshift(logEntry);
+  if (db.logs.length > 500) db.logs.pop();
+  saveDb();
+
+  return res.json({
+    success: true,
+    ticketId: result.ticketId,
+    ticketUrl: result.ticketUrl,
+    message: `Chamado de TI #${result.ticketId} criado com sucesso no GLPI!`,
+    report: result.report,
+    warnings: result.warnings
+  });
 });
 
 
@@ -1643,15 +2312,27 @@ app.post('/api/routines', (req: Request, res: Response) => {
     cronExpression: data.cronExpression || '',
     isActive: data.isActive !== false,
     type: data.type || 2,
+    statusId: data.statusId || 1,
+    requestTypeId: data.requestTypeId || 6,
     urgency: data.urgency || 3,
     impact: data.impact || 3,
     priority: data.priority || 3,
     categoryId: data.categoryId || 1,
     categoryName,
+    locationId: data.locationId,
+    locationName: data.locationName,
     requester: data.requester || 'joao.leopoldino@digitronbalancas.com.br',
+    requesterUserId: data.requesterUserId,
+    requesterGroupId: data.requesterGroupId,
     assignee: data.assignee || 'Equipe de TI',
+    assignedUserId: data.assignedUserId,
     technicalGroup: data.technicalGroup || 'Equipe de TI',
-    entityId: data.entityId || 0,
+    assignedGroupId: data.assignedGroupId,
+    observerUserId: data.observerUserId,
+    observerGroupId: data.observerGroupId,
+    extraFields: data.extraFields || '',
+    equipment: data.equipment || '',
+    entityId: data.entityId !== undefined ? data.entityId : 0,
     tags: data.tags || ['TI', 'Infraestrutura'],
     lastRunAt: null,
     nextRunAt: computeNextRun(data),

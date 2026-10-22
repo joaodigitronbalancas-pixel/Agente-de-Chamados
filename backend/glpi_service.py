@@ -1,10 +1,24 @@
 import time
 import socket
-from typing import Dict, Any, Tuple, Optional
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from typing import Dict, Any, Tuple, Optional, List
 from urllib.parse import urlparse
 import httpx
 
 from config import settings, mask_token
+
+SP_TZ = ZoneInfo("America/Sao_Paulo")
+
+def now_sao_paulo() -> datetime:
+    """Retorna datetime com fuso oficial America/Sao_Paulo (UTC-3)."""
+    return datetime.now(SP_TZ)
+
+def format_glpi_date(dt: Optional[datetime] = None) -> str:
+    """Formata data no padrão estrito SQL aceito pelo GLPI: YYYY-MM-DD HH:mm:ss."""
+    target = dt or now_sao_paulo()
+    return target.strftime("%Y-%m-%d %H:%M:%S")
+
 
 # TERMOS E CATEGORIAS RESTRITOS AO ESCOPO DE TI DIGI-TRON
 AUTHORIZED_IT_CATEGORIES = [
@@ -302,6 +316,47 @@ async def glpi_test_connection(
             "steps": steps
         }
 
+async def glpi_change_active_entities(base_url: str, session_token: str, app_token: str, entity_id: int) -> bool:
+    """Altera a entidade ativa da sessão com is_recursive=True para garantir visibilidade de categorias e locais."""
+    url = (base_url or "").strip().rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.post(
+                f"{url}/changeActiveEntities",
+                headers={
+                    "Content-Type": "application/json",
+                    "Session-Token": session_token,
+                    "App-Token": app_token
+                },
+                json={"entities_id": entity_id, "is_recursive": True}
+            )
+            return res.status_code == 200
+    except Exception:
+        return False
+
+async def glpi_get_session_clock(base_url: str, session_token: str, app_token: str) -> str:
+    """Lê a data/hora do relógio oficial do GLPI via /getFullSession."""
+    url = (base_url or "").strip().rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            res = await client.get(
+                f"{url}/getFullSession",
+                headers={
+                    "Content-Type": "application/json",
+                    "Session-Token": session_token,
+                    "App-Token": app_token
+                }
+            )
+            if res.status_code == 200:
+                data = res.json()
+                session_dict = data.get("session", {})
+                curr_time = session_dict.get("glpi_currenttime")
+                if curr_time and len(curr_time) >= 19:
+                    return curr_time[:19]
+    except Exception:
+        pass
+    return format_glpi_date()
+
 async def glpi_create_ticket(
     base_url: str,
     app_token: str,
@@ -315,10 +370,26 @@ async def glpi_create_ticket(
     impact: int = 3,
     priority: int = 3,
     entity_id: int = 0,
-    requester: str = "joao.leopoldino@digitronbalancas.com.br"
+    ticket_type: int = 2,
+    status_id: int = 1,
+    location_id: Optional[int] = None,
+    request_type_id: Optional[int] = 6,
+    requester_user_id: Optional[int] = 2,
+    requester_group_id: Optional[int] = None,
+    assigned_user_id: Optional[int] = None,
+    assigned_group_id: Optional[int] = 1,
+    observer_user_id: Optional[int] = None,
+    observer_group_id: Optional[int] = None,
+    extra_fields: Optional[str] = None,
+    equipment: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Cria um chamado real no GLPI com validação estrita de escopo de TI."""
-    # Validação estrita de escopo
+    """Cria um chamado no GLPI via fluxo multi-etapa:
+       1. changeActiveEntities (is_recursive=True)
+       2. Leitura do relógio GLPI / America/Sao_Paulo
+       3. POST /Ticket com escalares (IDs numéricos puros)
+       4. GET /Ticket/{id} e correção com PUT caso GLPI tenha aplicado defaults
+       5. Sincronização e expurgo do dono do token em Ticket_User e Group_Ticket
+    """
     valid, reason = check_it_scope(title, content, category_name)
     if not valid:
         raise ValueError(f"Bloqueio de Escopo: {reason}")
@@ -327,61 +398,158 @@ async def glpi_create_ticket(
     session = await glpi_init_session(url, app_token=app_token, user_token=user_token)
     session_token = session["session_token"]
 
-    ticket_url = f"{url}/Ticket"
-    payload = {
-        "input": {
-            "name": title,
-            "content": content,
-            "type": 2,  # 2 = Requisição
-            "urgency": urgency,
-            "impact": impact,
-            "priority": priority,
-            "itilcategories_id": category_id,
-            "entities_id": entity_id,
-            "_groups_id_assign": group_id,
-            "_users_id_requester": requester
-        }
-    }
-
     start_time = time.time()
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            res = await client.post(
-                ticket_url,
-                headers={
-                    "Content-Type": "application/json",
-                    "Session-Token": session_token,
-                    "App-Token": app_token
-                },
-                json=payload
-            )
-            duration_ms = int((time.time() - start_time) * 1000)
+    steps: List[Dict[str, str]] = []
 
-            if res.status_code not in (200, 201):
-                raw_text = res.text
+    try:
+        # Etapa 1: changeActiveEntities
+        ent_ok = await glpi_change_active_entities(url, session_token, app_token, entity_id)
+        steps.append({
+            "step": "changeActiveEntities",
+            "status": "success" if ent_ok else "warning",
+            "details": f"Entidade ativa alternada para {entity_id} (recursive=True)"
+        })
+
+        # Etapa 2: Data de Abertura (relógio do GLPI ou America/Sao_Paulo)
+        opening_date = await glpi_get_session_clock(url, session_token, app_token)
+
+        # Etapa 3: Montagem do payload escalar com IDs estritamente numéricos
+        full_content = content
+        if equipment and equipment.strip():
+            full_content += f"\n\n**Equipamento / Ativo de TI:** {equipment.strip()}"
+
+        input_payload: Dict[str, Any] = {
+            "name": title,
+            "content": full_content,
+            "type": int(ticket_type),
+            "status": int(status_id),
+            "itilcategories_id": int(category_id),
+            "entities_id": int(entity_id),
+            "urgency": int(urgency),
+            "impact": int(impact),
+            "priority": int(priority),
+            "date": opening_date
+        }
+        if location_id:
+            input_payload["locations_id"] = int(location_id)
+        if request_type_id:
+            input_payload["requesttypes_id"] = int(request_type_id)
+
+        # Campos extras no formato chave=valor
+        if extra_fields:
+            for line in extra_fields.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    k, v = line.split("=", 1)
+                    k, v = k.strip(), v.strip()
+                    try:
+                        input_payload[k] = int(v)
+                    except ValueError:
+                        input_payload[k] = v
+
+        # Envia POST /Ticket
+        headers = {
+            "Content-Type": "application/json",
+            "Session-Token": session_token,
+            "App-Token": app_token
+        }
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            ticket_res = await client.post(
+                f"{url}/Ticket",
+                headers=headers,
+                json={"input": input_payload}
+            )
+
+            if ticket_res.status_code not in (200, 201):
+                raw_text = ticket_res.text
                 try:
-                    data = res.json()
+                    data = ticket_res.json()
                     err = data[0] if isinstance(data, list) else data.get("message", raw_text)
                 except Exception:
                     err = raw_text
-                raise ValueError(f"GLPI rejeitou a criação do chamado (HTTP {res.status_code}): {err}")
+                raise ValueError(f"GLPI rejeitou a criação do chamado (HTTP {ticket_res.status_code}): {err}")
 
-            ticket_data = res.json()
-            ticket_id = ticket_data.get("id")
+            ticket_data = ticket_res.json()
+            ticket_id = ticket_data.get("id") or ticket_data.get("input", {}).get("id")
             if not ticket_id:
                 raise ValueError(f"GLPI respondeu sem ID de chamado: {ticket_data}")
 
+            # Etapa 4: Auditoria e Correção via PUT se campos escalares divergirem
+            get_res = await client.get(f"{url}/Ticket/{ticket_id}", headers=headers)
+            if get_res.status_code == 200:
+                rec_ticket = get_res.json()
+                corrections: Dict[str, Any] = {}
+                if int(rec_ticket.get("itilcategories_id", 0)) != int(input_payload["itilcategories_id"]):
+                    corrections["itilcategories_id"] = input_payload["itilcategories_id"]
+                if location_id and int(rec_ticket.get("locations_id", 0)) != int(location_id):
+                    corrections["locations_id"] = int(location_id)
+                if not rec_ticket.get("date") or rec_ticket.get("date") == "0000-00-00 00:00:00":
+                    corrections["date"] = opening_date
+
+                if corrections:
+                    corrections["id"] = ticket_id
+                    await client.put(f"{url}/Ticket/{ticket_id}", headers=headers, json={"input": corrections})
+
+            # Etapa 5: Sincronização de Atores (expurgando o dono do token GLPI se não selecionado)
+            tu_res = await client.get(f"{url}/Ticket/{ticket_id}/Ticket_User", headers=headers)
+            gt_res = await client.get(f"{url}/Ticket/{ticket_id}/Group_Ticket", headers=headers)
+
+            existing_tu = tu_res.json() if tu_res.status_code == 200 and isinstance(tu_res.json(), list) else []
+            existing_gt = gt_res.json() if gt_res.status_code == 200 and isinstance(gt_res.json(), list) else []
+
+            # Remove usuários indesejados (ex: dono do token inserido compulsoriamente pelo GLPI)
+            desired_user_map = {1: requester_user_id, 2: assigned_user_id, 3: observer_user_id}
+            for tu in existing_tu:
+                t_type = tu.get("type")
+                if desired_user_map.get(t_type) != tu.get("users_id"):
+                    await client.delete(f"{url}/Ticket_User/{tu.get('id')}", headers=headers)
+
+            # Remove grupos indesejados
+            desired_group_map = {1: requester_group_id, 2: assigned_group_id or group_id, 3: observer_group_id}
+            for gt in existing_gt:
+                t_type = gt.get("type")
+                if desired_group_map.get(t_type) != gt.get("groups_id"):
+                    await client.delete(f"{url}/Group_Ticket/{gt.get('id')}", headers=headers)
+
+            # Insere atores desejados se ainda não vinculados
+            if requester_user_id:
+                has_req = any(tu.get("type") == 1 and tu.get("users_id") == requester_user_id for tu in existing_tu)
+                if not has_req:
+                    await client.post(f"{url}/Ticket_User", headers=headers, json={"input": {"tickets_id": ticket_id, "users_id": requester_user_id, "type": 1}})
+
+            if assigned_user_id:
+                has_tech = any(tu.get("type") == 2 and tu.get("users_id") == assigned_user_id for tu in existing_tu)
+                if not has_tech:
+                    await client.post(f"{url}/Ticket_User", headers=headers, json={"input": {"tickets_id": ticket_id, "users_id": assigned_user_id, "type": 2}})
+
+            if observer_user_id:
+                has_obs = any(tu.get("type") == 3 and tu.get("users_id") == observer_user_id for tu in existing_tu)
+                if not has_obs:
+                    await client.post(f"{url}/Ticket_User", headers=headers, json={"input": {"tickets_id": ticket_id, "users_id": observer_user_id, "type": 3}})
+
+            target_grp = assigned_group_id or group_id
+            if target_grp:
+                has_grp = any(gt.get("type") == 2 and gt.get("groups_id") == target_grp for gt in existing_gt)
+                if not has_grp:
+                    await client.post(f"{url}/Group_Ticket", headers=headers, json={"input": {"tickets_id": ticket_id, "groups_id": target_grp, "type": 2}})
+
+            duration_ms = int((time.time() - start_time) * 1000)
             return {
                 "success": True,
                 "ticket_id": ticket_id,
                 "ticket_url": f"{url.replace('/apirest.php', '')}/front/ticket.form.php?id={ticket_id}",
                 "duration_ms": duration_ms,
-                "payload": payload,
+                "date": opening_date,
+                "payload": input_payload,
                 "response": ticket_data
             }
 
     finally:
         await glpi_kill_session(url, session_token, app_token)
+
 
 async def glpi_get_real_tickets(base_url: str, app_token: str, user_token: str, limit: int = 10) -> list:
     """Consulta chamados reais do GLPI ordenados por ID decrescente."""

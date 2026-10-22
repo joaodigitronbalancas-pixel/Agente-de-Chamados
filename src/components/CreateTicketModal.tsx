@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { 
   GlpiReferenceData, 
-  CreateGlpiTicketPayload 
+  CreateGlpiTicketPayload,
+  TicketConferenceReport 
 } from '../types';
 import { SearchableSelect, SelectOption } from './SearchableSelect';
+import { ConferenceReportModal } from './ConferenceReportModal';
 import { replaceMacroVariables } from '../utils/scheduler';
 import { 
   Ticket, 
@@ -17,7 +19,8 @@ import {
   Layers, 
   Send, 
   RefreshCw,
-  HardDrive
+  HardDrive,
+  FileCheck
 } from 'lucide-react';
 
 interface CreateTicketModalProps {
@@ -25,7 +28,14 @@ interface CreateTicketModalProps {
   onClose: () => void;
   referenceData: GlpiReferenceData | null;
   onTicketCreated?: (ticketId: number, ticketUrl: string) => void;
-  onSubmitTicket: (payload: CreateGlpiTicketPayload) => Promise<{ success: boolean; ticketId: number; ticketUrl: string; message: string }>;
+  onSubmitTicket: (payload: CreateGlpiTicketPayload) => Promise<{ 
+    success: boolean; 
+    ticketId: number; 
+    ticketUrl: string; 
+    message: string;
+    report?: TicketConferenceReport;
+    warnings?: string[];
+  }>;
 }
 
 export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
@@ -46,12 +56,16 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
   const [urgency, setUrgency] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [impact, setImpact] = useState<1 | 2 | 3 | 4 | 5>(3);
   const [priority, setPriority] = useState<1 | 2 | 3 | 4 | 5>(3);
+  const [locationId, setLocationId] = useState<number | undefined>(undefined);
+  const [requestTypeId, setRequestTypeId] = useState<number>(6);
   const [equipment, setEquipment] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdSuccess, setCreatedSuccess] = useState<{ id: number; url: string; msg: string } | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
+  const [conferenceReport, setConferenceReport] = useState<TicketConferenceReport | null>(null);
+  const [showReportModal, setShowReportModal] = useState(false);
 
   // Initialize defaults from referenceData
   useEffect(() => {
@@ -126,6 +140,28 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
     badge: `Entidade ${e.id}`
   }));
 
+  const locationOptions: SelectOption[] = [
+    { value: '', label: 'Nenhuma / Padrão da Entidade' },
+    ...(referenceData?.locations || []).map((l) => ({
+      value: l.id,
+      label: l.completeName || l.completename || l.name,
+      badge: `ID: ${l.id}`
+    }))
+  ];
+
+  const requestTypeOptions: SelectOption[] = (referenceData?.requestTypes || [
+    { id: 1, name: 'Helpdesk' },
+    { id: 2, name: 'E-mail' },
+    { id: 3, name: 'Telefone' },
+    { id: 4, name: 'Direta' },
+    { id: 5, name: 'Escrita' },
+    { id: 6, name: 'Outro (Agendador Automático)' }
+  ]).map((rt) => ({
+    value: rt.id,
+    label: rt.name,
+    badge: `ID: ${rt.id}`
+  }));
+
   const handleInsertMacro = (macro: string) => {
     setTitle((prev) => prev + ' ' + macro);
   };
@@ -183,12 +219,17 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
       urgency,
       impact,
       priority,
+      locationId,
+      requestTypeId,
       equipment: equipment.trim() || undefined
     };
 
     try {
       const res = await onSubmitTicket(payload);
       if (res.success) {
+        if (res.report) {
+          setConferenceReport(res.report);
+        }
         setCreatedSuccess({
           id: res.ticketId,
           url: res.ticketUrl,
@@ -265,6 +306,16 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
               </div>
 
               <div className="flex items-center justify-center gap-3 pt-2">
+                {conferenceReport && (
+                  <button
+                    type="button"
+                    onClick={() => setShowReportModal(true)}
+                    className="px-4 py-2 rounded-xl bg-violet-600/30 hover:bg-violet-600/40 text-violet-300 border border-violet-500/40 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    <FileCheck className="w-3.5 h-3.5" />
+                    <span>Ver Relatório de Conferência</span>
+                  </button>
+                )}
                 <a
                   href={createdSuccess.url}
                   target="_blank"
@@ -347,6 +398,23 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Row 2.5: Location & Request Type */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <SearchableSelect
+                  label="Localização Física (/Location)"
+                  options={locationOptions}
+                  value={locationId ?? ''}
+                  onChange={(val) => setLocationId(val ? Number(val) : undefined)}
+                />
+
+                <SearchableSelect
+                  label="Origem da Solicitação (/RequestType)"
+                  options={requestTypeOptions}
+                  value={requestTypeId}
+                  onChange={(val) => setRequestTypeId(Number(val))}
+                />
               </div>
 
               {/* Row 3: ITIL Fields (Type, Priority, Urgency, Impact) */}
@@ -582,6 +650,13 @@ export const CreateTicketModal: React.FC<CreateTicketModalProps> = ({
         )}
 
       </div>
+
+      {/* Conference Report Modal */}
+      <ConferenceReportModal
+        isOpen={showReportModal}
+        onClose={() => setShowReportModal(false)}
+        report={conferenceReport}
+      />
     </div>
   );
 };

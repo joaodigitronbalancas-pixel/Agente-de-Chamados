@@ -9,13 +9,16 @@ import {
   ConnectionTestResponse,
   GlpiReferenceData,
   GlpiTicketFull,
-  CreateGlpiTicketPayload
+  CreateGlpiTicketPayload,
+  TicketConferenceReport,
+  GlpiLocation,
+  GlpiRequestType
 } from '../types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
 
 export const api = {
-  // GLPI Reference Data (Users, Categories, Groups, Technicians, Entities)
+  // GLPI Reference Data (Users, Categories, Groups, Technicians, Entities, Locations, RequestTypes)
   async getReferenceData(): Promise<GlpiReferenceData> {
     const res = await fetch(`${API_BASE_URL}/api/glpi/reference-data`);
     if (!res.ok) throw new Error('Erro ao carregar dados de referência do GLPI');
@@ -25,6 +28,18 @@ export const api = {
   async refreshReferenceData(): Promise<GlpiReferenceData> {
     const res = await fetch(`${API_BASE_URL}/api/glpi/reference-data/refresh`, { method: 'POST' });
     if (!res.ok) throw new Error('Erro ao atualizar dados de referência do GLPI');
+    return res.json();
+  },
+
+  async getLocations(): Promise<GlpiLocation[]> {
+    const res = await fetch(`${API_BASE_URL}/api/glpi/locations`);
+    if (!res.ok) throw new Error('Erro ao listar localizações do GLPI');
+    return res.json();
+  },
+
+  async getRequestTypes(): Promise<GlpiRequestType[]> {
+    const res = await fetch(`${API_BASE_URL}/api/glpi/request-types`);
+    if (!res.ok) throw new Error('Erro ao listar tipos de solicitação do GLPI');
     return res.json();
   },
 
@@ -41,7 +56,14 @@ export const api = {
     return res.json();
   },
 
-  async createGlpiTicket(payload: CreateGlpiTicketPayload): Promise<{ success: boolean; ticketId: number; ticketUrl: string; message: string }> {
+  async createGlpiTicket(payload: CreateGlpiTicketPayload): Promise<{ 
+    success: boolean; 
+    ticketId: number; 
+    ticketUrl: string; 
+    message: string;
+    report?: TicketConferenceReport;
+    warnings?: string[];
+  }> {
     const res = await fetch(`${API_BASE_URL}/api/glpi/tickets`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -49,6 +71,33 @@ export const api = {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || data.error || 'Erro ao criar chamado no GLPI');
+    return data;
+  },
+
+  // Test Ticket with Conference Report
+  async testTicket(payload: Partial<CreateGlpiTicketPayload> & {
+    title?: string;
+    description?: string;
+    content?: string;
+    requesterUserId?: number;
+    requesterGroupId?: number;
+    assignedUserId?: number;
+    assignedGroupId?: number;
+    observerUserId?: number;
+    observerGroupId?: number;
+    locationId?: number;
+    requestTypeId?: number;
+    statusId?: number;
+    extraFields?: string;
+    equipment?: string;
+  }): Promise<TicketConferenceReport> {
+    const res = await fetch(`${API_BASE_URL}/api/glpi/test-ticket`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || data.error || 'Falha no teste de criação de chamado no GLPI');
     return data;
   },
 

@@ -13,6 +13,29 @@
 export const SAO_PAULO_TZ = 'America/Sao_Paulo';
 
 /**
+ * Returns current Date in America/Sao_Paulo.
+ */
+export function nowSaoPaulo(): Date {
+  return new Date();
+}
+
+/**
+ * Formats a Date/string strictly as SQL/GLPI format: "YYYY-MM-DD HH:mm:ss" in America/Sao_Paulo timezone.
+ * Without any UTC shift! This is the exact format GLPI expects for "date" (Data de abertura).
+ */
+export function formatGlpiDateTime(input: string | number | Date | null | undefined = new Date()): string {
+  const d = parseDateSafe(input) || new Date();
+  const parts = getSaoPauloParts(d);
+  const y = parts.year;
+  const m = String(parts.month).padStart(2, '0');
+  const day = String(parts.day).padStart(2, '0');
+  const h = String(parts.hour).padStart(2, '0');
+  const min = String(parts.minute).padStart(2, '0');
+  const s = String(parts.second).padStart(2, '0');
+  return `${y}-${m}-${day} ${h}:${min}:${s}`;
+}
+
+/**
  * Safely parses any date string, timestamp or Date instance into a valid Date object.
  * Returns null if input is invalid or empty.
  */

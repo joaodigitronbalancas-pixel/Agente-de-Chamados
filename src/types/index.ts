@@ -46,14 +46,26 @@ export interface RoutineSchedule {
   cronExpression?: string;
   isActive: boolean;
   type: 1 | 2; // 1 = Incidente, 2 = Requisição
+  statusId?: number; // 1 = Novo, 2 = Em atendimento, etc.
+  requestTypeId?: number; // Origem da requisição (1=Helpdesk, 2=E-mail, etc.)
   urgency: 1 | 2 | 3 | 4 | 5; // 1: Muito Baixa ... 5: Muito Alta
   impact: 1 | 2 | 3 | 4 | 5;
   priority: 1 | 2 | 3 | 4 | 5;
   categoryId?: number;
   categoryName: ItCategory;
+  locationId?: number;
+  locationName?: string;
   requester?: string;
+  requesterUserId?: number;
+  requesterGroupId?: number;
   assignee?: string;
+  assignedUserId?: number;
   technicalGroup?: string; // e.g. "Equipe de TI"
+  assignedGroupId?: number;
+  observerUserId?: number;
+  observerGroupId?: number;
+  extraFields?: string; // formato "campo=valor" por linha
+  equipment?: string;
   entityId: number;
   tags: string[];
   lastRunAt: string | null;
@@ -198,15 +210,34 @@ export interface GlpiCategory {
   id: number;
   name: string;
   completeName: string;
+  completename?: string;
   parentId?: number;
   entityId?: number;
   isIt: boolean;
+  isIncident?: boolean;
+  isRequest?: boolean;
+  is_incident?: number;
+  is_request?: number;
+}
+
+export interface GlpiLocation {
+  id: number;
+  name: string;
+  completeName: string;
+  completename?: string;
+  entityId?: number;
+}
+
+export interface GlpiRequestType {
+  id: number;
+  name: string;
 }
 
 export interface GlpiGroup {
   id: number;
   name: string;
   completeName: string;
+  completename?: string;
   entityId?: number;
   canAssign?: boolean;
 }
@@ -224,6 +255,7 @@ export interface GlpiEntity {
   id: number;
   name: string;
   completeName: string;
+  completename?: string;
 }
 
 export interface GlpiFieldOption {
@@ -240,6 +272,8 @@ export interface GlpiReferenceData {
   groups: GlpiGroup[];
   technicians: GlpiTechnician[];
   entities: GlpiEntity[];
+  locations: GlpiLocation[];
+  requestTypes: GlpiRequestType[];
   statusOptions: GlpiFieldOption[];
   priorityOptions: GlpiFieldOption[];
   urgencyOptions: GlpiFieldOption[];
@@ -262,6 +296,10 @@ export interface GlpiTicketFull {
   categoryName?: string;
   entityId?: number;
   entityName?: string;
+  locationId?: number;
+  locationName?: string;
+  requestTypeId?: number;
+  requestTypeName?: string;
   requesterId?: number;
   requesterName?: string;
   requesterEmail?: string;
@@ -282,15 +320,67 @@ export interface CreateGlpiTicketPayload {
   categoryName?: string;
   requesterId?: number;
   requesterName?: string;
+  requesterGroupId?: number;
   groupId?: number;
   groupName?: string;
   technicianId?: number;
   technicianName?: string;
+  observerUserId?: number;
+  observerGroupId?: number;
   entityId?: number;
   type: 1 | 2; // 1 = Incidente, 2 = Requisição
+  statusId?: number; // 1 = Novo, etc.
+  requestTypeId?: number;
+  locationId?: number;
   urgency: 1 | 2 | 3 | 4 | 5;
   impact: 1 | 2 | 3 | 4 | 5;
   priority: 1 | 2 | 3 | 4 | 5;
   equipment?: string;
+  extraFields?: string;
+}
+
+export interface TicketComparisonItem {
+  field: string;
+  sentValue: any;
+  recordedValue: any;
+  matches: boolean;
+  label?: string;
+  sent?: any;
+  recorded?: any;
+  match?: boolean;
+}
+
+export interface TicketActorItem {
+  id: number;
+  name: string;
+  role: string;
+  targetType: string;
+  action: 'added' | 'removed' | 'confirmed';
+  type?: 1 | 2 | 3;
+  typeName?: 'Requerente' | 'Atribuído' | 'Observador';
+  isGroup?: boolean;
+}
+
+export interface TicketConferenceReport {
+  success: boolean;
+  ticketId: number;
+  ticketUrl: string;
+  recordedDate: string;
+  durationMs: number;
+  steps: {
+    step: string;
+    status: 'success' | 'warning' | 'error' | 'skipped';
+    details: string;
+  }[];
+  scalarComparison: TicketComparisonItem[];
+  actors: TicketActorItem[];
+  warnings?: string[];
+  message?: string;
+  openingDate?: {
+    sent: string;
+    recorded: string;
+    match: boolean;
+  };
+  comparison?: TicketComparisonItem[];
 }
 
