@@ -1,6 +1,7 @@
+import os
 import time
 import socket
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Tuple, Optional, List
 from urllib.parse import urlparse
@@ -13,6 +14,15 @@ SP_TZ = ZoneInfo("America/Sao_Paulo")
 def now_sao_paulo() -> datetime:
     """Retorna datetime com fuso oficial America/Sao_Paulo (UTC-3)."""
     return datetime.now(SP_TZ)
+
+def date_offset_hours() -> float:
+    """Ajuste manual em horas (GLPI_DATE_OFFSET_HOURS em backend/.env). Último recurso."""
+    try:
+        v = float(os.getenv("GLPI_DATE_OFFSET_HOURS", "0") or 0)
+    except ValueError:
+        v = 0.0
+    return max(-12.0, min(12.0, v))
+
 
 def format_glpi_date(dt: Optional[datetime] = None) -> str:
     """Formata data no padrão estrito SQL aceito pelo GLPI: YYYY-MM-DD HH:mm:ss."""
@@ -400,6 +410,7 @@ async def glpi_create_ticket(
 
     start_time = time.time()
     steps: List[Dict[str, str]] = []
+    warnings: List[str] = []
 
     try:
         # Etapa 1: changeActiveEntities
@@ -411,7 +422,15 @@ async def glpi_create_ticket(
         })
 
         # Etapa 2: Data de Abertura (relógio do GLPI ou America/Sao_Paulo)
-        opening_date = await glpi_get_session_clock(url, session_token, app_token)
+        # A data de abertura SEMPRE usa America/Sao_Paulo (o servidor GLPI/Docker costuma estar em UTC).
+        glpi_clock = await glpi_get_session_clock(url, session_token, app_token)
+        offset_h = date_offset_hours()
+        opening_date = format_glpi_date(now_sao_paulo() + timedelta(hours=offset_h))
+        if glpi_clock[:16] != format_glpi_date()[:16]:
+            warnings.append(
+                f"Relógio do servidor GLPI ({glpi_clock}) difere do horário de São Paulo ({format_glpi_date()}). "
+                f"Data de abertura enviada: {opening_date}" + (f" (ajuste manual {offset_h:g}h)." if offset_h else ".")
+            )
 
         # Etapa 3: Montagem do payload escalar com IDs estritamente numéricos
         full_content = content
@@ -486,55 +505,67 @@ async def glpi_create_ticket(
                     corrections["itilcategories_id"] = input_payload["itilcategories_id"]
                 if location_id and int(rec_ticket.get("locations_id", 0)) != int(location_id):
                     corrections["locations_id"] = int(location_id)
-                if not rec_ticket.get("date") or rec_ticket.get("date") == "0000-00-00 00:00:00":
+                rec_date = str(rec_ticket.get("date") or "")
+                if not rec_date or rec_date == "0000-00-00 00:00:00" or rec_date[:16] != opening_date[:16]:
                     corrections["date"] = opening_date
 
                 if corrections:
                     corrections["id"] = ticket_id
                     await client.put(f"{url}/Ticket/{ticket_id}", headers=headers, json={"input": corrections})
 
-            # Etapa 5: Sincronização de Atores (expurgando o dono do token GLPI se não selecionado)
+            # Etapa 5: Sincronização de Atores (expurgando o dono do token se não selecionado)
+            def n(v: Any) -> int:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    return 0
+
+            actor_errors: List[str] = []
+
+            async def actor_call(method: str, path: str, label: str, body: Optional[Dict[str, Any]] = None) -> None:
+                try:
+                    r = await client.request(method, f"{url}/{path}", headers=headers, json=body)
+                    if r.status_code not in (200, 201):
+                        actor_errors.append(f"{label}: HTTP {r.status_code} {r.text[:200]}")
+                except Exception as e:  # noqa
+                    actor_errors.append(f"{label}: {e}")
+
             tu_res = await client.get(f"{url}/Ticket/{ticket_id}/Ticket_User", headers=headers)
             gt_res = await client.get(f"{url}/Ticket/{ticket_id}/Group_Ticket", headers=headers)
-
             existing_tu = tu_res.json() if tu_res.status_code == 200 and isinstance(tu_res.json(), list) else []
             existing_gt = gt_res.json() if gt_res.status_code == 200 and isinstance(gt_res.json(), list) else []
 
-            # Remove usuários indesejados (ex: dono do token inserido compulsoriamente pelo GLPI)
-            desired_user_map = {1: requester_user_id, 2: assigned_user_id, 3: observer_user_id}
+            desired_user_map = {1: n(requester_user_id), 2: n(assigned_user_id), 3: n(observer_user_id)}
+            desired_group_map = {1: n(requester_group_id), 2: n(assigned_group_id or group_id), 3: n(observer_group_id)}
+
             for tu in existing_tu:
-                t_type = tu.get("type")
-                if desired_user_map.get(t_type) != tu.get("users_id"):
-                    await client.delete(f"{url}/Ticket_User/{tu.get('id')}", headers=headers)
+                wanted = desired_user_map.get(n(tu.get("type")), 0)
+                if not wanted or wanted != n(tu.get("users_id")):
+                    await actor_call("DELETE", f"Ticket_User/{tu.get('id')}", f"Remover usuário {tu.get('users_id')} (tipo {tu.get('type')})")
 
-            # Remove grupos indesejados
-            desired_group_map = {1: requester_group_id, 2: assigned_group_id or group_id, 3: observer_group_id}
             for gt in existing_gt:
-                t_type = gt.get("type")
-                if desired_group_map.get(t_type) != gt.get("groups_id"):
-                    await client.delete(f"{url}/Group_Ticket/{gt.get('id')}", headers=headers)
+                wanted = desired_group_map.get(n(gt.get("type")), 0)
+                if not wanted or wanted != n(gt.get("groups_id")):
+                    await actor_call("DELETE", f"Group_Ticket/{gt.get('id')}", f"Remover grupo {gt.get('groups_id')} (tipo {gt.get('type')})")
 
-            # Insere atores desejados se ainda não vinculados
-            if requester_user_id:
-                has_req = any(tu.get("type") == 1 and tu.get("users_id") == requester_user_id for tu in existing_tu)
-                if not has_req:
-                    await client.post(f"{url}/Ticket_User", headers=headers, json={"input": {"tickets_id": ticket_id, "users_id": requester_user_id, "type": 1}})
+            for t_type, uid in desired_user_map.items():
+                if uid and not any(n(tu.get("type")) == t_type and n(tu.get("users_id")) == uid for tu in existing_tu):
+                    await actor_call("POST", "Ticket_User", f"Adicionar usuário {uid} (tipo {t_type})",
+                                     {"input": {"tickets_id": ticket_id, "users_id": uid, "type": t_type}})
 
-            if assigned_user_id:
-                has_tech = any(tu.get("type") == 2 and tu.get("users_id") == assigned_user_id for tu in existing_tu)
-                if not has_tech:
-                    await client.post(f"{url}/Ticket_User", headers=headers, json={"input": {"tickets_id": ticket_id, "users_id": assigned_user_id, "type": 2}})
+            for t_type, gid in desired_group_map.items():
+                if gid and not any(n(gt.get("type")) == t_type and n(gt.get("groups_id")) == gid for gt in existing_gt):
+                    await actor_call("POST", "Group_Ticket", f"Adicionar grupo {gid} (tipo {t_type})",
+                                     {"input": {"tickets_id": ticket_id, "groups_id": gid, "type": t_type}})
 
-            if observer_user_id:
-                has_obs = any(tu.get("type") == 3 and tu.get("users_id") == observer_user_id for tu in existing_tu)
-                if not has_obs:
-                    await client.post(f"{url}/Ticket_User", headers=headers, json={"input": {"tickets_id": ticket_id, "users_id": observer_user_id, "type": 3}})
+            for err in actor_errors:
+                warnings.append(f"Atores: {err}")
 
-            target_grp = assigned_group_id or group_id
-            if target_grp:
-                has_grp = any(gt.get("type") == 2 and gt.get("groups_id") == target_grp for gt in existing_gt)
-                if not has_grp:
-                    await client.post(f"{url}/Group_Ticket", headers=headers, json={"input": {"tickets_id": ticket_id, "groups_id": target_grp, "type": 2}})
+            # Conferência final da data gravada
+            final_res = await client.get(f"{url}/Ticket/{ticket_id}", headers=headers)
+            recorded_date = str((final_res.json() if final_res.status_code == 200 else {}).get("date") or "")
+            if recorded_date[:16] != opening_date[:16]:
+                warnings.append(f"date enviado={opening_date} / gravado={recorded_date or 'vazio'}")
 
             duration_ms = int((time.time() - start_time) * 1000)
             return {
@@ -543,6 +574,14 @@ async def glpi_create_ticket(
                 "ticket_url": f"{url.replace('/apirest.php', '')}/front/ticket.form.php?id={ticket_id}",
                 "duration_ms": duration_ms,
                 "date": opening_date,
+                "warnings": warnings,
+                "date_audit": {
+                    "sent": opening_date,
+                    "recorded": recorded_date,
+                    "glpi_clock": glpi_clock,
+                    "offset_hours": offset_h,
+                    "matches": recorded_date[:16] == opening_date[:16],
+                },
                 "payload": input_payload,
                 "response": ticket_data
             }

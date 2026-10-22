@@ -748,20 +748,19 @@ async function executeGlpiTicketMultiStep(
 
     // Step 2: Read GLPI Session Clock (/getFullSession)
     const sessionInfo = await getGlpiSessionInfo(baseUrl, sessionToken, config.appToken);
-    let openingDateStr = sessionInfo.currentTime;
-    if (openingDateStr && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(openingDateStr)) {
-      steps.push({
-        step: '2. getFullSession',
-        status: 'success',
-        details: `Data/hora obtida do relógio oficial do GLPI: ${openingDateStr}`
-      });
-    } else {
-      openingDateStr = formatGlpiDateTime(nowSaoPaulo());
-      steps.push({
-        step: '2. getFullSession',
-        status: 'warning',
-        details: `Relógio do GLPI não retornou timestamp válido; utilizando horário local America/Sao_Paulo: ${openingDateStr}`
-      });
+    // A data de abertura SEMPRE usa America/Sao_Paulo (o relógio do servidor GLPI pode estar em UTC).
+    // Ajuste manual em horas (último recurso): config.timeOffsetHours ou GLPI_DATE_OFFSET_HOURS no .env
+    const rawOffset = Number((config as any).timeOffsetHours ?? process.env.GLPI_DATE_OFFSET_HOURS ?? 0);
+    const dateOffsetHours = Number.isFinite(rawOffset) ? Math.max(-12, Math.min(12, rawOffset)) : 0;
+    const openingDateStr = formatGlpiDateTime(new Date(nowSaoPaulo().getTime() + dateOffsetHours * 3600 * 1000));
+    const glpiClockStr = sessionInfo.currentTime;
+    steps.push({
+      step: '2. Data de abertura (America/Sao_Paulo)',
+      status: 'success',
+      details: `Data enviada: ${openingDateStr}${dateOffsetHours ? ` (ajuste manual ${dateOffsetHours}h)` : ''}. Relógio do servidor GLPI (apenas comparação): ${glpiClockStr || 'indisponível'}.`
+    });
+    if (glpiClockStr && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(glpiClockStr) && glpiClockStr.slice(0, 16) !== openingDateStr.slice(0, 16)) {
+      warnings.push(`O relógio do servidor GLPI (${glpiClockStr}) difere do horário de São Paulo (${openingDateStr}). A data de abertura foi enviada no horário de São Paulo.`);
     }
 
     // Step 3: Resolve Numeric IDs using official GLPI mapping tables
@@ -799,6 +798,19 @@ async function executeGlpiTicketMultiStep(
 
     const obsGroupRes = params.observerGroupId ? resolveGlpiGroupId(params.observerGroupId, 1) : null;
     const observerGroupId = obsGroupRes?.id;
+
+    // Se um valor foi informado mas não corresponde a um ID real, NÃO cria com ID padrão aleatório.
+    const notFoundMsgs = [catRes, locRes, reqUserRes, reqGroupRes, techUserRes, assignGroupRes, obsUserRes, obsGroupRes]
+      .map(r => r?.warning)
+      .filter((w): w is string => !!w && w.includes('não localiz'));
+    if (notFoundMsgs.length > 0) {
+      await glpiKillSession(baseUrl, sessionToken, config.appToken);
+      return {
+        success: false,
+        error: `Nenhum chamado foi criado. Campos não encontrados no GLPI: ${notFoundMsgs.join(' | ')} Selecione os valores nas listas (botão "Atualizar Listas GLPI").`,
+        warnings
+      };
+    }
 
     // Step 4: changeActiveEntities (with recursive: true)
     const entityChanged = await glpiChangeActiveEntities(baseUrl, sessionToken, config.appToken, entityId);
@@ -909,7 +921,11 @@ async function executeGlpiTicketMultiStep(
     if (Number(recordedTicket.priority) !== Number(inputPayload.priority)) {
       corrections.priority = inputPayload.priority;
     }
-    if (!recordedTicket.date || recordedTicket.date === '0000-00-00 00:00:00') {
+    if (
+      !recordedTicket.date ||
+      recordedTicket.date === '0000-00-00 00:00:00' ||
+      String(recordedTicket.date).slice(0, 16) !== openingDateStr.slice(0, 16)
+    ) {
       corrections.date = openingDateStr;
     }
 
@@ -964,87 +980,76 @@ async function executeGlpiTicketMultiStep(
       3: observerGroupId
     };
 
-    // Remove unwanted user actors (e.g., token owner auto-injected by GLPI)
-    if (Array.isArray(existingTicketUsers)) {
-      for (const tu of existingTicketUsers) {
-        const desiredForType = desiredUserMap[tu.type];
-        if (desiredForType !== tu.users_id) {
-          await fetch(`${baseUrl}/Ticket_User/${tu.id}`, {
-            method: 'DELETE',
-            headers: { 'Session-Token': sessionToken, 'App-Token': config.appToken }
-          }).catch(() => null);
+    const actorErrors: string[] = [];
+    const actorHeaders = { 'Content-Type': 'application/json', 'Session-Token': sessionToken, 'App-Token': config.appToken };
+    const actorCall = async (method: 'POST' | 'DELETE', path: string, label: string, body?: any) => {
+      try {
+        const r = await fetch(`${baseUrl}/${path}`, {
+          method,
+          headers: actorHeaders,
+          body: body ? JSON.stringify(body) : undefined
+        });
+        if (!r.ok) {
+          const txt = await r.text().catch(() => '');
+          actorErrors.push(`${label}: HTTP ${r.status} ${txt.slice(0, 200)}`);
         }
+      } catch (e: any) {
+        actorErrors.push(`${label}: ${e?.message || e}`);
+      }
+    };
+
+    const tuList: any[] = Array.isArray(existingTicketUsers) ? existingTicketUsers : [];
+    const gtList: any[] = Array.isArray(existingGroupTickets) ? existingGroupTickets : [];
+
+    // Remove atores de usuário indesejados (ex.: dono do token inserido automaticamente pelo GLPI)
+    for (const tu of tuList) {
+      const wanted = desiredUserMap[Number(tu.type)];
+      if (!wanted || Number(wanted) !== Number(tu.users_id)) {
+        await actorCall('DELETE', `Ticket_User/${tu.id}`, `Remover usuário ${tu.users_id} (tipo ${tu.type})`);
       }
     }
 
-    // Remove unwanted group actors
-    if (Array.isArray(existingGroupTickets)) {
-      for (const gt of existingGroupTickets) {
-        const desiredForType = desiredGroupMap[gt.type];
-        if (desiredForType !== gt.groups_id) {
-          await fetch(`${baseUrl}/Group_Ticket/${gt.id}`, {
-            method: 'DELETE',
-            headers: { 'Session-Token': sessionToken, 'App-Token': config.appToken }
-          }).catch(() => null);
-        }
+    // Remove grupos indesejados
+    for (const gt of gtList) {
+      const wanted = desiredGroupMap[Number(gt.type)];
+      if (!wanted || Number(wanted) !== Number(gt.groups_id)) {
+        await actorCall('DELETE', `Group_Ticket/${gt.id}`, `Remover grupo ${gt.groups_id} (tipo ${gt.type})`);
       }
     }
 
-    // Add desired user actors idempotently
+    // Adiciona usuários desejados (idempotente)
     for (const [typeStr, userId] of Object.entries(desiredUserMap)) {
       const actorType = Number(typeStr);
       if (!userId) continue;
-      const alreadyPresent = Array.isArray(existingTicketUsers) && existingTicketUsers.some(
-        tu => tu.type === actorType && tu.users_id === userId
-      );
-      if (!alreadyPresent) {
-        await fetch(`${baseUrl}/Ticket_User`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Session-Token': sessionToken,
-            'App-Token': config.appToken
-          },
-          body: JSON.stringify({
-            input: {
-              tickets_id: ticketId,
-              users_id: userId,
-              type: actorType
-            }
-          })
-        }).catch(() => null);
+      const present = tuList.some(tu => Number(tu.type) === actorType && Number(tu.users_id) === Number(userId));
+      if (!present) {
+        await actorCall('POST', 'Ticket_User', `Adicionar usuário ${userId} (tipo ${actorType})`, {
+          input: { tickets_id: ticketId, users_id: Number(userId), type: actorType }
+        });
       }
     }
 
-    // Add desired group actors idempotently
+    // Adiciona grupos desejados (idempotente)
     for (const [typeStr, grpId] of Object.entries(desiredGroupMap)) {
       const actorType = Number(typeStr);
       if (!grpId) continue;
-      const alreadyPresent = Array.isArray(existingGroupTickets) && existingGroupTickets.some(
-        gt => gt.type === actorType && gt.groups_id === grpId
-      );
-      if (!alreadyPresent) {
-        await fetch(`${baseUrl}/Group_Ticket`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Session-Token': sessionToken,
-            'App-Token': config.appToken
-          },
-          body: JSON.stringify({
-            input: {
-              tickets_id: ticketId,
-              groups_id: grpId,
-              type: actorType
-            }
-          })
-        }).catch(() => null);
+      const present = gtList.some(gt => Number(gt.type) === actorType && Number(gt.groups_id) === Number(grpId));
+      if (!present) {
+        await actorCall('POST', 'Group_Ticket', `Adicionar grupo ${grpId} (tipo ${actorType})`, {
+          input: { tickets_id: ticketId, groups_id: Number(grpId), type: actorType }
+        });
       }
+    }
+
+    if (actorErrors.length > 0) {
+      actorErrors.forEach(e => warnings.push(`Atores: ${e}`));
     }
     steps.push({
       step: '6. Sincronização de Atores',
-      status: 'success',
-      details: `Atores sincronizados: Requerente Usuário (${requesterUserId}), Grupo Atribuído (${assignedGroupId}), Técnico (${assignedUserId || 'Nenhum'}), Observador (${observerUserId || 'Nenhum'}). Token owner corrigido.`
+      status: actorErrors.length > 0 ? 'error' : 'success',
+      details: actorErrors.length > 0
+        ? `FALHAS ao sincronizar atores: ${actorErrors.join(' | ')}`
+        : `Atores sincronizados: Requerente Usuário (${requesterUserId}), Grupo Atribuído (${assignedGroupId}), Técnico (${assignedUserId || 'Nenhum'}), Observador (${observerUserId || 'Nenhum'}).`
     });
 
     // Step 8: Final Verification GET
