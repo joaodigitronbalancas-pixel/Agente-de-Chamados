@@ -78,31 +78,100 @@ export const ConferenceReportModal: React.FC<ConferenceReportModalProps> = ({
         {/* Body */}
         <div className="p-5 sm:p-6 overflow-y-auto space-y-6">
           
-          {/* Quick Metrics */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800">
-              <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
-                <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Data de Abertura Gravada</span>
+          {/* 4 Clocks Time Audit Section */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-slate-950/80 border border-cyan-500/30 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Clock className="w-4 h-4 text-cyan-400" />
+                <h4 className="text-xs font-bold text-white uppercase tracking-wider">
+                  Auditoria de Data & Hora (4 Relógios de Conferência)
+                </h4>
               </div>
-              <div className="text-sm font-bold text-white font-mono">
-                {report.recordedDate || 'N/A'}
-              </div>
-              <div className="text-[10px] text-cyan-400 mt-0.5">
-                America/Sao_Paulo (Horário Oficial GLPI)
+              <div className="flex items-center gap-2">
+                {(report.timeAudit?.matches ?? report.openingDate?.match) ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    <CheckCircle2 className="w-3.5 h-3.5" /> Data Gravada Bateu com a Programada
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    <AlertTriangle className="w-3.5 h-3.5" /> Divergência na Data de Abertura
+                  </span>
+                )}
+                {Boolean(report.timeAudit?.offsetHoursApplied) && (
+                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded-lg border border-cyan-800">
+                    Ajuste: {report.timeAudit?.offsetHoursApplied}h
+                  </span>
+                )}
               </div>
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+              {/* Relógio 1: Servidor do App */}
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800">
+                <span className="text-[10px] text-slate-400 font-medium block">
+                  1. Relógio Servidor do App
+                </span>
+                <span className="text-xs font-bold text-white font-mono block mt-1">
+                  {report.timeAudit?.appServerTime || report.openingDate?.sent || '—'}
+                </span>
+                <span className="text-[9px] text-slate-500 block mt-0.5">
+                  America/Sao_Paulo (UTC-3)
+                </span>
+              </div>
+
+              {/* Relógio 2: GLPI Session Clock */}
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-slate-800">
+                <span className="text-[10px] text-amber-300 font-medium block">
+                  2. Relógio GLPI (/getFullSession)
+                </span>
+                <span className="text-xs font-bold text-amber-200 font-mono block mt-1">
+                  {report.timeAudit?.glpiCurrentTime || 'Não lido'}
+                </span>
+                <span className="text-[9px] text-amber-400/70 block mt-0.5">
+                  Apenas comparação (servidor em UTC)
+                </span>
+              </div>
+
+              {/* Relógio 3: Data Enviada */}
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-cyan-500/20">
+                <span className="text-[10px] text-cyan-300 font-medium block">
+                  3. Data Enviada no Chamado
+                </span>
+                <span className="text-xs font-bold text-cyan-200 font-mono block mt-1">
+                  {report.timeAudit?.sentDate || report.openingDate?.sent || '—'}
+                </span>
+                <span className="text-[9px] text-cyan-400/80 block mt-0.5">
+                  Data/hora programada na rotina
+                </span>
+              </div>
+
+              {/* Relógio 4: Data Gravada */}
+              <div className="p-3 rounded-xl bg-slate-900/80 border border-emerald-500/20">
+                <span className="text-[10px] text-emerald-300 font-medium block">
+                  4. Data Gravada no GLPI (GET)
+                </span>
+                <span className="text-xs font-bold text-emerald-200 font-mono block mt-1">
+                  {report.timeAudit?.recordedDate || report.recordedDate || report.openingDate?.recorded || '—'}
+                </span>
+                <span className="text-[9px] text-emerald-400/80 block mt-0.5">
+                  Confirmada no chamado #{report.ticketId}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Metrics */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="p-3.5 rounded-2xl bg-slate-950/70 border border-slate-800">
               <div className="flex items-center gap-2 text-xs text-slate-400 mb-1">
                 <Sliders className="w-3.5 h-3.5 text-emerald-400" />
-                <span>Campos Escalares</span>
+                <span>Campos Escalares Auditados</span>
               </div>
               <div className="text-sm font-bold text-white">
                 {report.scalarComparison.filter(c => c.matches).length} de {report.scalarComparison.length} idênticos
               </div>
               <div className="text-[10px] text-emerald-400 mt-0.5">
-                Categoria, Localização, Tipo, Prioridade
+                Categoria, Localização, Tipo, Prioridade, Status
               </div>
             </div>
 
@@ -115,7 +184,7 @@ export const ConferenceReportModal: React.FC<ConferenceReportModalProps> = ({
                 {report.actors.length} vínculos auditados
               </div>
               <div className="text-[10px] text-violet-400 mt-0.5">
-                Token excluído, Requerente & Técnico vinculados
+                Token excluído se necessário, Requerente & Técnico vinculados
               </div>
             </div>
           </div>

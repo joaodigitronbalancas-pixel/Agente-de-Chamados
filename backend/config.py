@@ -27,6 +27,8 @@ class Settings:
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
     
+    GLPI_DATE_OFFSET_HOURS: int = int(os.getenv("GLPI_DATE_OFFSET_HOURS", "0"))
+    
     # CORS Origins (permite o Agente de Chamados na porta 5522 e origens locais)
     _raw_cors = os.getenv(
         "CORS_ORIGINS", 

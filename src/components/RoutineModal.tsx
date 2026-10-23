@@ -88,6 +88,7 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
   const [technicalGroup, setTechnicalGroup] = useState('Equipe de TI');
 
   // Advanced / Extras
+  const [openingDate, setOpeningDate] = useState<string>('');
   const [extraFields, setExtraFields] = useState<string>('');
   const [tagsInput, setTagsInput] = useState('TI, Servidores, Infraestrutura');
 
@@ -132,8 +133,10 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
       setAssignee(initialData.assignee || 'Equipe de TI');
       setTechnicalGroup(initialData.technicalGroup || 'Equipe de TI');
       setExtraFields(initialData.extraFields || '');
+      setOpeningDate(initialData.openingDate || '');
       setTagsInput((initialData.tags || []).join(', '));
     } else {
+      setOpeningDate('');
       setTitle('[TI] Verificação Diária de Backups e Integridade do ERP Factory OS ({data})');
       setContent(`## 💾 Verificação Diária de Backups — Tecnologia da Informação\n**Data Programada:** {data} às {hora}\n**Setor Responsável:** Equipe de Infraestrutura e TI Digi-Tron\n**Atenção:** Este chamado solicita que o técnico realize a verificação descrita no checklist abaixo.\n\n### 📋 Checklist Técnico de Execução:\n- [ ] Conferir status de conclusão dos jobs de backup do ERP Factory OS.\n- [ ] Verificar integridade e checksum SHA-256 do dump diário do banco de dados.\n- [ ] Conferir replicação dos snapshots para o storage NAS secundário.\n- [ ] Validar que o volume de backup possui no mínimo 25% de espaço livre.`);
       setFrequency('daily');
@@ -234,7 +237,8 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
         observerUserId,
         observerGroupId,
         extraFields,
-        equipment
+        equipment,
+        openingDate: openingDate || undefined
       });
 
       setConferenceReport(report);
@@ -253,6 +257,42 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
     if (!title.trim() || !content.trim()) {
       setError('Título e descrição do chamado de TI são obrigatórios');
       return;
+    }
+
+    // Validação estrita de IDs numéricos contra o GLPI ao vivo
+    if (referenceData && referenceData.isLive) {
+      if (categoryId && !referenceData.categories.some(c => c.id === Number(categoryId))) {
+        setError(`O campo Categoria com ID [${categoryId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
+      if (locationId && !referenceData.locations.some(l => l.id === Number(locationId))) {
+        setError(`O campo Localização com ID [${locationId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
+      if (requesterUserId && !referenceData.users.some(u => u.id === Number(requesterUserId))) {
+        setError(`O campo Requerente (Usuário) com ID [${requesterUserId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
+      if (assignedUserId && !referenceData.users.some(u => u.id === Number(assignedUserId))) {
+        setError(`O campo Técnico Atribuído com ID [${assignedUserId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
+      if (assignedGroupId && !referenceData.groups.some(g => g.id === Number(assignedGroupId))) {
+        setError(`O campo Grupo Atribuído com ID [${assignedGroupId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
+      if (requesterGroupId && !referenceData.groups.some(g => g.id === Number(requesterGroupId))) {
+        setError(`O campo Grupo Requerente com ID [${requesterGroupId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
+      if (observerUserId && !referenceData.users.some(u => u.id === Number(observerUserId))) {
+        setError(`O campo Observador (Usuário) com ID [${observerUserId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
+      if (observerGroupId && !referenceData.groups.some(g => g.id === Number(observerGroupId))) {
+        setError(`O campo Observador (Grupo) com ID [${observerGroupId}] não existe no GLPI. Clique em "Atualizar Listas GLPI".`);
+        return;
+      }
     }
 
     // Anti-slop / Scope restriction
@@ -304,6 +344,7 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
         assignee,
         technicalGroup,
         extraFields,
+        openingDate: openingDate || undefined,
         tags
       });
       onClose();
@@ -661,6 +702,22 @@ export const RoutineModal: React.FC<RoutineModalProps> = ({
                         />
                       </div>
                     )}
+                  </div>
+
+                  {/* Data e hora de abertura específica / programada */}
+                  <div className="pt-3 border-t border-slate-800/80">
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1">
+                      Data e hora de abertura (Opcional)
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={openingDate}
+                      onChange={(e) => setOpeningDate(e.target.value)}
+                      className="w-full sm:w-80 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-cyan-300 font-mono focus:outline-none focus:border-cyan-500"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Se vazio, usa a hora programada da rotina (agendada) ou a hora atual (execução manual).
+                    </p>
                   </div>
                 </div>
 

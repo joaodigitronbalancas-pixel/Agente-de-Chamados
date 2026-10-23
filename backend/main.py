@@ -97,6 +97,8 @@ class TestCreateTicketRequest(BaseModel):
     description: Optional[str] = None
     categoryId: Optional[int] = 1
     categoryName: Optional[str] = "TI - Infraestrutura e Servidores"
+    openingDate: Optional[str] = None
+    opening_date: Optional[str] = None
 
 class RoutineCreateRequest(BaseModel):
     title: str
@@ -109,34 +111,67 @@ class RoutineCreateRequest(BaseModel):
     cronExpression: Optional[str] = ""
     isActive: bool = True
     type: int = 2
+    statusId: Optional[int] = 1
+    requestTypeId: Optional[int] = 6
     urgency: int = 3
     impact: int = 3
     priority: int = 3
     categoryId: int = 1
     categoryName: str = "TI - Infraestrutura e Servidores"
+    locationId: Optional[int] = None
+    locationName: Optional[str] = None
     requester: str = "joao.leopoldino@digitronbalancas.com.br"
+    requesterUserId: Optional[int] = None
+    requesterGroupId: Optional[int] = None
     assignee: str = "Equipe de TI"
+    assignedUserId: Optional[int] = None
     technicalGroup: str = "Equipe de TI"
+    assignedGroupId: Optional[int] = None
+    observerUserId: Optional[int] = None
+    observerGroupId: Optional[int] = None
+    extraFields: Optional[str] = None
+    equipment: Optional[str] = None
+    openingDate: Optional[str] = None
+    opening_date: Optional[str] = None
     entityId: int = 0
     tags: List[str] = ["TI"]
 
 class CreateTicketPayload(BaseModel):
     title: str
     description: str
+    content: Optional[str] = None
     categoryId: int = 1
     categoryName: Optional[str] = "TI - Infraestrutura e Servidores"
     requesterId: Optional[int] = None
+    requesterUserId: Optional[int] = None
     requesterName: Optional[str] = None
+    requesterGroupId: Optional[int] = None
     groupId: Optional[int] = 1
     groupName: Optional[str] = "Equipe de TI"
+    assignedGroupId: Optional[int] = None
     technicianId: Optional[int] = None
+    assignedUserId: Optional[int] = None
     technicianName: Optional[str] = None
+    observerUserId: Optional[int] = None
+    observerGroupId: Optional[int] = None
     entityId: Optional[int] = 0
     type: int = 2
+    statusId: Optional[int] = 1
+    status: Optional[int] = 1
+    locationId: Optional[int] = None
+    requestTypeId: Optional[int] = 6
     urgency: int = 3
     impact: int = 3
     priority: int = 3
     equipment: Optional[str] = None
+    extraFields: Optional[str] = None
+    openingDate: Optional[str] = None
+    opening_date: Optional[str] = None
+
+class TriggerRequest(BaseModel):
+    openingDate: Optional[str] = None
+    opening_date: Optional[str] = None
+    userName: Optional[str] = None
 
 
 # ----------------- ROTAS DE AMBIENTE -----------------
@@ -318,14 +353,69 @@ async def test_create_real_ticket_endpoint(req: TestCreateTicketRequest):
             content=content,
             category_id=req.categoryId or 1,
             category_name=category_name,
-            group_id=cfg.get("defaultItGroupId", 1)
+            group_id=cfg.get("defaultItGroupId", 1),
+            opening_date=req.openingDate or req.opening_date,
+            offset_hours=getattr(settings, "GLPI_DATE_OFFSET_HOURS", 0)
         )
         return {
             "success": True,
             "ticketId": result["ticket_id"],
             "ticketUrl": result["ticket_url"],
+            "date": result.get("date"),
+            "report": result.get("report"),
             "message": f"Chamado de teste #{result['ticket_id']} criado com sucesso no GLPI!"
         }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/glpi/test-ticket")
+async def test_ticket_endpoint(payload: CreateTicketPayload):
+    """
+    Testa a criação de um chamado com relatório de conferência completo (4 relógios, atores, escalares).
+    """
+    valid, reason = check_it_scope(payload.title, payload.description, payload.categoryName or "TI")
+    if not valid:
+        raise HTTPException(status_code=400, detail=reason)
+
+    cfg = db.data.get("glpiConfig", {})
+    url = cfg.get("url", settings.GLPI_BASE_URL)
+    app_token = cfg.get("appToken", settings.GLPI_APP_TOKEN)
+    user_token = cfg.get("userToken", settings.GLPI_USER_TOKEN)
+
+    content = payload.description or payload.content or ""
+    if payload.equipment:
+        content += f"\n\n**Equipamento / Ativo de TI:** {payload.equipment}"
+
+    try:
+        result = await glpi_create_ticket(
+            base_url=url,
+            app_token=app_token,
+            user_token=user_token,
+            title=payload.title,
+            content=content,
+            category_id=payload.categoryId,
+            category_name=payload.categoryName or "TI - Infraestrutura e Servidores",
+            group_id=payload.assignedGroupId or payload.groupId or cfg.get("defaultItGroupId", 1),
+            urgency=payload.urgency,
+            impact=payload.impact,
+            priority=payload.priority,
+            entity_id=payload.entityId or 0,
+            ticket_type=payload.type,
+            status_id=payload.statusId or payload.status or 1,
+            location_id=payload.locationId,
+            request_type_id=payload.requestTypeId or 6,
+            requester_user_id=payload.requesterUserId or payload.requesterId or 2,
+            requester_group_id=payload.requesterGroupId,
+            assigned_user_id=payload.assignedUserId or payload.technicianId,
+            assigned_group_id=payload.assignedGroupId,
+            observer_user_id=payload.observerUserId,
+            observer_group_id=payload.observerGroupId,
+            extra_fields=payload.extraFields,
+            equipment=payload.equipment,
+            opening_date=payload.openingDate or payload.opening_date,
+            offset_hours=getattr(settings, "GLPI_DATE_OFFSET_HOURS", 0)
+        )
+        return result.get("report") or result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -374,7 +464,7 @@ async def create_ticket_endpoint(payload: CreateTicketPayload):
     app_token = cfg.get("appToken", settings.GLPI_APP_TOKEN)
     user_token = cfg.get("userToken", settings.GLPI_USER_TOKEN)
 
-    content = payload.description
+    content = payload.description or payload.content or ""
     if payload.equipment:
         content += f"\n\n**Equipamento / Ativo de TI:** {payload.equipment}"
 
@@ -386,18 +476,33 @@ async def create_ticket_endpoint(payload: CreateTicketPayload):
             title=payload.title,
             content=content,
             category_id=payload.categoryId,
-            category_name=payload.categoryName or "TI",
-            group_id=payload.groupId or 1,
+            category_name=payload.categoryName or "TI - Infraestrutura e Servidores",
+            group_id=payload.assignedGroupId or payload.groupId or cfg.get("defaultItGroupId", 1),
             urgency=payload.urgency,
             impact=payload.impact,
             priority=payload.priority,
             entity_id=payload.entityId or 0,
-            requester=str(payload.requesterId) if payload.requesterId else "2"
+            ticket_type=payload.type,
+            status_id=payload.statusId or payload.status or 1,
+            location_id=payload.locationId,
+            request_type_id=payload.requestTypeId or 6,
+            requester_user_id=payload.requesterUserId or payload.requesterId or 2,
+            requester_group_id=payload.requesterGroupId,
+            assigned_user_id=payload.assignedUserId or payload.technicianId,
+            assigned_group_id=payload.assignedGroupId,
+            observer_user_id=payload.observerUserId,
+            observer_group_id=payload.observerGroupId,
+            extra_fields=payload.extraFields,
+            equipment=payload.equipment,
+            opening_date=payload.openingDate or payload.opening_date,
+            offset_hours=getattr(settings, "GLPI_DATE_OFFSET_HOURS", 0)
         )
         return {
             "success": True,
             "ticketId": result["ticket_id"],
             "ticketUrl": result["ticket_url"],
+            "date": result.get("date"),
+            "report": result.get("report"),
             "message": f"Chamado #{result['ticket_id']} criado com sucesso no GLPI!"
         }
     except Exception as e:
@@ -470,13 +575,21 @@ async def toggle_routine(routine_id: str):
     return routine
 
 @app.post("/api/routines/{routine_id}/trigger")
-async def trigger_routine(routine_id: str):
+async def trigger_routine(routine_id: str, req: Optional[TriggerRequest] = None):
     routines = db.data.get("routines", [])
     routine = next((r for r in routines if r["id"] == routine_id), None)
     if not routine:
         raise HTTPException(status_code=404, detail="Rotina não encontrada")
 
-    res = await execute_routine_dispatch(routine, "manual", "João Leopoldino (Disparo Manual)")
+    req_opening_date = (req.openingDate or req.opening_date) if req else None
+    user_name = (req.userName or "João Leopoldino (Disparo Manual)") if req else "João Leopoldino (Disparo Manual)"
+
+    res = await execute_routine_dispatch(
+        routine=routine, 
+        trigger_type="manual", 
+        triggered_by=user_name,
+        opening_date=req_opening_date
+    )
     return res
 
 # ----------------- LOGS & ESTATÍSTICAS -----------------

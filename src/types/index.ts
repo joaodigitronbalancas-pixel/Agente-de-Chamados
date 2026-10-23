@@ -66,6 +66,7 @@ export interface RoutineSchedule {
   observerGroupId?: number;
   extraFields?: string; // formato "campo=valor" por linha
   equipment?: string;
+  openingDate?: string; // Data e hora de abertura programada ou específica
   entityId: number;
   tags: string[];
   lastRunAt: string | null;
@@ -338,6 +339,8 @@ export interface CreateGlpiTicketPayload {
   priority: 1 | 2 | 3 | 4 | 5;
   equipment?: string;
   extraFields?: string;
+  openingDate?: string;
+  opening_date?: string;
 }
 
 export interface TicketComparisonItem {

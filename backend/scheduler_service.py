@@ -1,12 +1,20 @@
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 
 from config import DATA_FILE, settings
-from glpi_service import glpi_create_ticket, check_it_scope
+from glpi_service import (
+    glpi_create_ticket, 
+    check_it_scope, 
+    SP_TZ, 
+    now_sao_paulo, 
+    resolve_opening_date, 
+    format_glpi_date
+)
 
 logger = logging.getLogger("GLPIScheduler")
 
@@ -140,9 +148,9 @@ class DatabaseManager:
 
 db = DatabaseManager(DATA_FILE)
 
-# Substituição de Variáveis Macro
+# Substituição de Variáveis Macro com fuso America/Sao_Paulo
 def replace_macros(text: str) -> str:
-    now = datetime.now()
+    now = now_sao_paulo()
     months_pt = [
         "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
         "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
@@ -173,8 +181,8 @@ def replace_macros(text: str) -> str:
     return res
 
 def compute_next_run(routine: Dict[str, Any]) -> str:
-    """Calcula a próxima execução de uma rotina."""
-    now = datetime.now()
+    """Calcula a próxima execução de uma rotina no fuso America/Sao_Paulo."""
+    now = now_sao_paulo()
     time_str = routine.get("time", "08:00")
     try:
         hour, minute = map(int, time_str.split(":"))
@@ -187,32 +195,38 @@ def compute_next_run(routine: Dict[str, Any]) -> str:
         candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if candidate <= now:
             candidate += timedelta(days=1)
-        return candidate.isoformat() + "Z"
+        return candidate.isoformat()
 
     elif freq == "weekly":
         days = routine.get("daysOfWeek", [1])
-        # Converte para 0=Segunda, 6=Domingo do Python
-        # Se frontend usa 1=Segunda, 0=Domingo:
         target_days = [d - 1 if d > 0 else 6 for d in days]
         for offset in range(1, 8):
             candidate = now + timedelta(days=offset)
             if candidate.weekday() in target_days:
-                return candidate.replace(hour=hour, minute=minute, second=0, microsecond=0).isoformat() + "Z"
-        return (now + timedelta(days=7)).replace(hour=hour, minute=minute).isoformat() + "Z"
+                return candidate.replace(hour=hour, minute=minute, second=0, microsecond=0).isoformat()
+        return (now + timedelta(days=7)).replace(hour=hour, minute=minute, second=0, microsecond=0).isoformat()
 
     elif freq == "custom_interval":
         hours = routine.get("customIntervalHours", 24)
-        return (now + timedelta(hours=hours)).isoformat() + "Z"
+        return (now + timedelta(hours=hours)).isoformat()
 
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= now:
         candidate += timedelta(days=1)
-    return candidate.isoformat() + "Z"
+    return candidate.isoformat()
 
 executing_routines = set()
 
-async def execute_routine_dispatch(routine: Dict[str, Any], trigger_type: str = "scheduled", triggered_by: str = "Agendador Automático TI") -> Dict[str, Any]:
-    """Dispara a execução de uma rotina de TI no GLPI com proteção contra concorrência e escopo."""
+async def execute_routine_dispatch(
+    routine: Dict[str, Any], 
+    trigger_type: str = "scheduled", 
+    triggered_by: str = "Agendador Automático TI",
+    opening_date: Optional[str] = None
+) -> Dict[str, Any]:
+    """Dispara a execução de uma rotina de TI no GLPI com proteção contra concorrência e escopo.
+       Garante que a data de abertura seja a cadastrada na rotina (ou informada no disparo),
+       em America/Sao_Paulo, e NUNCA o relógio glpi_currenttime do servidor em UTC.
+    """
     routine_id = routine.get("id")
     if routine_id in executing_routines:
         return {"success": False, "error": "Rotina já em processamento concorrente"}
@@ -221,6 +235,29 @@ async def execute_routine_dispatch(routine: Dict[str, Any], trigger_type: str = 
     cfg = db.data.get("glpiConfig", {})
     rendered_title = replace_macros(routine.get("title", ""))
     rendered_content = replace_macros(routine.get("content", ""))
+
+    now_sp = now_sao_paulo()
+
+    # REGRA DE DATA DE ABERTURA:
+    # 1. Rotina agendada: a "Data de abertura" do chamado = a data e hora PROGRAMADA daquela execução
+    #    (ex.: rotina diária às 08:00 -> abre no dia da ocorrência às 08:00:00 no fuso America/Sao_Paulo).
+    # 2. Execução manual ("Executar agora") e "Testar Chamado": usa opening_date se preenchido,
+    #    ou a hora atual de Brasília se vazio.
+    if trigger_type == "scheduled":
+        time_str = routine.get("time", "08:00")
+        try:
+            h, m = map(int, time_str.split(":"))
+        except Exception:
+            h, m = 8, 0
+        occurrence_dt = now_sp.replace(hour=h, minute=m, second=0, microsecond=0)
+        target_opening_date = occurrence_dt.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        if opening_date and str(opening_date).strip():
+            target_opening_date = str(opening_date).strip()
+        elif routine.get("openingDate"):
+            target_opening_date = str(routine.get("openingDate")).strip()
+        else:
+            target_opening_date = format_glpi_date(now_sp)
 
     try:
         res = await glpi_create_ticket(
@@ -231,12 +268,25 @@ async def execute_routine_dispatch(routine: Dict[str, Any], trigger_type: str = 
             content=rendered_content,
             category_id=routine.get("categoryId", 1),
             category_name=routine.get("categoryName", "TI - Infraestrutura e Servidores"),
-            group_id=cfg.get("defaultItGroupId", 1),
+            group_id=routine.get("assignedGroupId") or routine.get("groupId") or cfg.get("defaultItGroupId", 1),
             urgency=routine.get("urgency", 3),
             impact=routine.get("impact", 3),
             priority=routine.get("priority", 3),
             entity_id=routine.get("entityId", 0),
-            requester=routine.get("requester", "joao.leopoldino@digitronbalancas.com.br")
+            ticket_type=routine.get("type", 2),
+            status_id=routine.get("statusId", 1),
+            location_id=routine.get("locationId"),
+            request_type_id=routine.get("requestTypeId", 6),
+            requester_user_id=routine.get("requesterUserId") or 2,
+            requester_group_id=routine.get("requesterGroupId"),
+            assigned_user_id=routine.get("assignedUserId"),
+            assigned_group_id=routine.get("assignedGroupId"),
+            observer_user_id=routine.get("observerUserId"),
+            observer_group_id=routine.get("observerGroupId"),
+            extra_fields=routine.get("extraFields"),
+            equipment=routine.get("equipment"),
+            opening_date=target_opening_date,
+            offset_hours=getattr(settings, "GLPI_DATE_OFFSET_HOURS", 0)
         )
 
         ticket_id = res["ticket_id"]
@@ -245,34 +295,40 @@ async def execute_routine_dispatch(routine: Dict[str, Any], trigger_type: str = 
             "routineId": routine_id,
             "routineTitle": rendered_title,
             "categoryName": routine.get("categoryName"),
-            "triggeredAt": datetime.utcnow().isoformat() + "Z",
+            "triggeredAt": format_glpi_date(now_sp),
             "status": "success",
             "glpiTicketId": ticket_id,
             "glpiTicketUrl": res.get("ticket_url"),
             "executionType": trigger_type,
             "executedBy": triggered_by,
-            "message": f"Chamado de TI #{ticket_id} criado com sucesso no GLPI!",
+            "message": f"Chamado de TI #{ticket_id} criado com sucesso no GLPI! (Data de abertura: {res.get('date')})",
             "durationMs": res.get("duration_ms", 0),
             "requestPayload": res.get("payload"),
-            "responsePayload": res.get("response")
+            "responsePayload": res.get("report") or res.get("response")
         }
 
         db.data["logs"].insert(0, log_entry)
         if len(db.data["logs"]) > 500:
             db.data["logs"].pop()
 
-        routine["lastRunAt"] = datetime.utcnow().isoformat() + "Z"
+        routine["lastRunAt"] = format_glpi_date(now_sp)
         routine["nextRunAt"] = compute_next_run(routine)
         routine["totalDispatched"] = routine.get("totalDispatched", 0) + 1
         routine["lastExecutionStatus"] = "success"
         routine["lastTicketId"] = ticket_id
 
         db.data["glpiConfig"]["connectionStatus"] = "connected"
-        db.data["glpiConfig"]["lastCheck"] = datetime.utcnow().isoformat() + "Z"
+        db.data["glpiConfig"]["lastCheck"] = format_glpi_date(now_sp)
         db.data["glpiConfig"]["lastErrorMessage"] = None
         db.save()
 
-        return {"success": True, "ticketId": ticket_id, "log": log_entry}
+        return {
+            "success": True, 
+            "ticketId": ticket_id, 
+            "ticketUrl": res.get("ticket_url"),
+            "log": log_entry, 
+            "report": res.get("report")
+        }
 
     except Exception as err:
         log_entry = {
@@ -280,7 +336,7 @@ async def execute_routine_dispatch(routine: Dict[str, Any], trigger_type: str = 
             "routineId": routine_id,
             "routineTitle": rendered_title,
             "categoryName": routine.get("categoryName"),
-            "triggeredAt": datetime.utcnow().isoformat() + "Z",
+            "triggeredAt": format_glpi_date(now_sp),
             "status": "failed",
             "glpiTicketId": None,
             "executionType": trigger_type,
@@ -301,13 +357,12 @@ async def execute_routine_dispatch(routine: Dict[str, Any], trigger_type: str = 
 
 async def scheduler_loop():
     """Loop de fundo do agendador automático independente do navegador."""
-    import time
     while True:
         try:
             cfg = db.data.get("glpiConfig", {})
             if cfg.get("schedulerRunning", True):
-                db.data["glpiConfig"]["schedulerLastHeartbeat"] = datetime.utcnow().isoformat() + "Z"
-                now = datetime.utcnow()
+                now_sp = now_sao_paulo()
+                db.data["glpiConfig"]["schedulerLastHeartbeat"] = format_glpi_date(now_sp)
 
                 for routine in db.data.get("routines", []):
                     if not routine.get("isActive", True):
@@ -316,15 +371,26 @@ async def scheduler_loop():
                     next_run_str = routine.get("nextRunAt")
                     if next_run_str:
                         try:
-                            # Converte ISO para datetime
-                            next_run = datetime.fromisoformat(next_run_str.replace("Z", "+00:00"))
-                            if next_run <= now.replace(tzinfo=next_run.tzinfo):
+                            clean_str = next_run_str.replace("Z", "").replace(" ", "T")
+                            if "+" in clean_str or "-" in clean_str[10:]:
+                                next_run = datetime.fromisoformat(clean_str).astimezone(SP_TZ)
+                            else:
+                                next_run = datetime.fromisoformat(clean_str).replace(tzinfo=SP_TZ)
+
+                            if next_run <= now_sp:
                                 # Prevenção de duplicidade: não executa se já executou nos últimos 55s
                                 last_run_str = routine.get("lastRunAt")
                                 if last_run_str:
-                                    last_run = datetime.fromisoformat(last_run_str.replace("Z", "+00:00"))
-                                    if (now.replace(tzinfo=last_run.tzinfo) - last_run).total_seconds() < 55:
-                                        continue
+                                    last_clean = last_run_str.replace("Z", "").replace(" ", "T")
+                                    try:
+                                        if "+" in last_clean or "-" in last_clean[10:]:
+                                            last_run = datetime.fromisoformat(last_clean).astimezone(SP_TZ)
+                                        else:
+                                            last_run = datetime.fromisoformat(last_clean).replace(tzinfo=SP_TZ)
+                                        if (now_sp - last_run).total_seconds() < 55:
+                                            continue
+                                    except Exception:
+                                        pass
 
                                 logger.info(f"Agendador disparando: {routine.get('title')}")
                                 await execute_routine_dispatch(routine, "scheduled", "Agendador de TI (Serviço Automático)")

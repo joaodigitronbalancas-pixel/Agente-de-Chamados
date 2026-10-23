@@ -36,6 +36,52 @@ export function formatGlpiDateTime(input: string | number | Date | null | undefi
 }
 
 /**
+ * Resolves the opening date for a GLPI ticket in strict America/Sao_Paulo timezone.
+ * Rules:
+ * 1. If explicit openingDate is provided (e.g. from manual trigger or form), uses that date/time.
+ * 2. If scheduledTime is provided (e.g. routine scheduled for "08:00"), constructs today's date in America/Sao_Paulo at that scheduled time.
+ * 3. If neither is provided, uses current time in America/Sao_Paulo.
+ * 4. NUNCA uses the GLPI server's UTC clock (glpi_currenttime) as the ticket's opening date!
+ * 5. Applies offsetHours if configured as a manual adjustment.
+ */
+export function resolveOpeningDate(
+  openingDate?: string | null,
+  scheduledTime?: string | null,
+  offsetHours: number = 0
+): string {
+  if (openingDate && String(openingDate).trim()) {
+    let clean = String(openingDate).trim().replace('T', ' ');
+    if (clean.length === 10) clean += ' 08:00:00';
+    if (clean.length === 16) clean += ':00';
+    const parsed = parseDateSafe(clean);
+    if (parsed) {
+      if (offsetHours) {
+        parsed.setHours(parsed.getHours() + offsetHours);
+      }
+      return formatGlpiDateTime(parsed);
+    }
+  }
+
+  if (scheduledTime && /^\d{2}:\d{2}$/.test(scheduledTime.trim())) {
+    const today = getSaoPauloTodayIso();
+    const dateStr = `${today} ${scheduledTime.trim()}:00`;
+    const parsed = parseDateSafe(dateStr);
+    if (parsed) {
+      if (offsetHours) {
+        parsed.setHours(parsed.getHours() + offsetHours);
+      }
+      return formatGlpiDateTime(parsed);
+    }
+  }
+
+  const now = nowSaoPaulo();
+  if (offsetHours) {
+    now.setHours(now.getHours() + offsetHours);
+  }
+  return formatGlpiDateTime(now);
+}
+
+/**
  * Safely parses any date string, timestamp or Date instance into a valid Date object.
  * Returns null if input is invalid or empty.
  */
